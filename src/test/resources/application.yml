@@ -15,8 +15,15 @@ quantdesk:
   sentiment:
     provider: lexicon
     model: claude-opus-4-8
+  universe:
+    file: data/universe.csv
+    top-n: 2
+    lookback-days: 5
+    scan-interval-ms: 3600000
+    scan-initial-delay-ms: 3600000
   trading:
     mode: "OFF"
+    universe-mode: false
     symbols:
       - SAMPLE
     interval-ms: 60000

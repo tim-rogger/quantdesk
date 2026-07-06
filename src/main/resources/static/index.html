@@ -169,6 +169,19 @@ td.empty, li.empty { color: var(--muted); font-style: italic; text-align: center
 }
 .newsForm button:hover { filter: brightness(1.1); }
 .newsForm button:disabled { opacity: 0.5; cursor: wait; }
+.scanHead { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.scanBtn {
+  background: var(--accent);
+  border: none;
+  color: #0f172a;
+  font-weight: 700;
+  padding: 7px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.scanBtn:hover { filter: brightness(1.1); }
+.scanBtn:disabled { opacity: 0.5; cursor: wait; }
 .sentiment { margin-bottom: 14px; }
 .sentHead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
 .track {
@@ -258,6 +271,19 @@ ul.news a:hover { color: var(--accent); }
       <p id="sentRationale" class="muted"></p>
     </div>
     <ul class="news" id="newsList"><li class="empty">Enter a symbol and press Load</li></ul>
+  </section>
+  <section class="card wide">
+    <h2>Universe Scan</h2>
+    <div class="scanHead">
+      <button type="button" id="scanBtn" class="scanBtn">Scan now</button>
+      <span id="scanTime" class="muted">Scan not run yet</span>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th class="num">Rank</th><th>Symbol</th><th class="num">Momentum %</th><th class="num">Last price</th><th>Data OK</th></tr></thead>
+        <tbody id="scanBody"><tr><td colspan="5" class="empty">Loading&hellip;</td></tr></tbody>
+      </table>
+    </div>
   </section>
   <section class="card wide">
     <h2>Trade log</h2>
@@ -532,6 +558,52 @@ const loadNews = async () => {
   list.replaceChildren(frag);
 };
 
+const refreshScan = async () => {
+  const data = await getJson("/scan");
+  const tbody = $("scanBody");
+  const whenText = fmtDateTime(pick(data, ["lastScanAt", "lastScan", "scannedAt", "timestamp", "at"]));
+  $("scanTime").textContent = whenText ? "Last scan: " + whenText : "Scan not run yet";
+  const rows = asArray(data, ["results", "items", "ranking", "scan"]);
+  if (!rows.length) {
+    emptyRow(tbody, 5, data ? "Scan not run yet" : "Scan unavailable");
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  rows.slice(0, 200).forEach((r, i) => {
+    const tr = document.createElement("tr");
+    const rank = num(pick(r, ["rank"]));
+    cell(tr, rank === null ? String(i + 1) : String(rank), "num");
+    cell(tr, text(pick(r, ["symbol", "ticker"])));
+    const score = num(pick(r, ["momentumScore", "score", "momentum"]));
+    if (score === null) {
+      cell(tr, "—", "num");
+    } else {
+      const pct = score * 100;
+      cell(tr, (pct > 0 ? "+" : "") + pct.toFixed(2) + "%", "num " + (pct > 0 ? "pos" : pct < 0 ? "neg" : ""));
+    }
+    cell(tr, money(pick(r, ["lastPrice", "price"])), "num");
+    const okRaw = pick(r, ["dataAvailable", "dataOk", "ok"]);
+    if (okRaw === undefined) {
+      cell(tr, "—");
+    } else {
+      const ok = okRaw === true || okRaw === "true";
+      cell(tr, ok ? "yes" : "no", ok ? "pos" : "neg");
+    }
+    frag.appendChild(tr);
+  });
+  tbody.replaceChildren(frag);
+};
+
+$("scanBtn").addEventListener("click", async () => {
+  const btn = $("scanBtn");
+  btn.disabled = true;
+  btn.textContent = "Scanning…";
+  await post("/scan/run");
+  btn.textContent = "Scan now";
+  btn.disabled = false;
+  refreshScan();
+});
+
 $("killBtn").addEventListener("click", async () => {
   const btn = $("killBtn");
   btn.disabled = true;
@@ -563,6 +635,7 @@ const refreshAll = () => {
   refreshStatus();
   refreshPositions();
   refreshLog();
+  refreshScan();
 };
 
 refreshAll();

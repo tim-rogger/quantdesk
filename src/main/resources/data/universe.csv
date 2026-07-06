@@ -1,0 +1,105 @@
+symbol,name
+aapl.us,Apple
+msft.us,Microsoft
+nvda.us,Nvidia
+googl.us,Alphabet
+amzn.us,Amazon
+meta.us,Meta Platforms
+tsla.us,Tesla
+brk-b.us,Berkshire Hathaway
+avgo.us,Broadcom
+lly.us,Eli Lilly
+jpm.us,JPMorgan Chase
+v.us,Visa
+ma.us,Mastercard
+unh.us,UnitedHealth Group
+xom.us,Exxon Mobil
+jnj.us,Johnson & Johnson
+pg.us,Procter & Gamble
+hd.us,Home Depot
+cost.us,Costco
+abbv.us,AbbVie
+mrk.us,Merck
+orcl.us,Oracle
+crm.us,Salesforce
+wmt.us,Walmart
+ko.us,Coca-Cola
+pep.us,PepsiCo
+bac.us,Bank of America
+tmo.us,Thermo Fisher Scientific
+csco.us,Cisco Systems
+mcd.us,McDonald's
+acn.us,Accenture
+adbe.us,Adobe
+abt.us,Abbott Laboratories
+lin.us,Linde
+dhr.us,Danaher
+nke.us,Nike
+txn.us,Texas Instruments
+dis.us,Walt Disney
+wfc.us,Wells Fargo
+amd.us,Advanced Micro Devices
+vz.us,Verizon Communications
+cmcsa.us,Comcast
+intc.us,Intel
+pm.us,Philip Morris International
+nee.us,NextEra Energy
+cop.us,ConocoPhillips
+bmy.us,Bristol-Myers Squibb
+rtx.us,RTX
+hon.us,Honeywell International
+ups.us,United Parcel Service
+qcom.us,Qualcomm
+t.us,AT&T
+low.us,Lowe's
+spgi.us,S&P Global
+intu.us,Intuit
+ba.us,Boeing
+cat.us,Caterpillar
+ge.us,GE Aerospace
+amat.us,Applied Materials
+ms.us,Morgan Stanley
+gs.us,Goldman Sachs
+blk.us,BlackRock
+axp.us,American Express
+de.us,Deere
+sbux.us,Starbucks
+pltr.us,Palantir Technologies
+bkng.us,Booking Holdings
+mdlz.us,Mondelez International
+adi.us,Analog Devices
+gild.us,Gilead Sciences
+lmt.us,Lockheed Martin
+mmc.us,Marsh & McLennan
+syk.us,Stryker
+tjx.us,TJX Companies
+vrtx.us,Vertex Pharmaceuticals
+c.us,Citigroup
+schw.us,Charles Schwab
+amgn.us,Amgen
+pfe.us,Pfizer
+now.us,ServiceNow
+isrg.us,Intuitive Surgical
+etn.us,Eaton
+zts.us,Zoetis
+cb.us,Chubb
+pgr.us,Progressive
+so.us,Southern Company
+duk.us,Duke Energy
+elv.us,Elevance Health
+ci.us,Cigna Group
+mo.us,Altria Group
+regn.us,Regeneron Pharmaceuticals
+bsx.us,Boston Scientific
+bdx.us,Becton Dickinson
+adp.us,Automatic Data Processing
+cme.us,CME Group
+mu.us,Micron Technology
+lrcx.us,Lam Research
+klac.us,KLA
+snps.us,Synopsys
+cdns.us,Cadence Design Systems
+panw.us,Palo Alto Networks
+anet.us,Arista Networks
+nflx.us,Netflix
+uber.us,Uber Technologies

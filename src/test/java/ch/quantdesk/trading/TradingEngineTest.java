@@ -1,6 +1,7 @@
 package ch.quantdesk.trading;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 import ch.quantdesk.backtest.Side;
 import ch.quantdesk.execution.BrokerGateway;
@@ -10,6 +11,7 @@ import ch.quantdesk.execution.Position;
 import ch.quantdesk.marketdata.Bar;
 import ch.quantdesk.marketdata.BarSeries;
 import ch.quantdesk.marketdata.MarketDataProvider;
+import ch.quantdesk.universe.UniverseScanner;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -32,8 +34,10 @@ class TradingEngineTest {
             riskProperties,
             new RiskManager(riskProperties),
             tradeLog,
+            mock(UniverseScanner.class),
             Optional.empty(),
-            Optional.empty());
+            Optional.empty(),
+            false);
 
     @BeforeEach
     void setUp() {

@@ -15,8 +15,15 @@ quantdesk:
   sentiment:
     provider: lexicon
     model: claude-opus-4-8
+  universe:
+    file: data/universe.csv
+    top-n: 5
+    lookback-days: 63
+    scan-interval-ms: 900000
+    scan-initial-delay-ms: 15000
   trading:
     mode: DRY_RUN
+    universe-mode: true
     symbols:
       - AAPL.US
       - MSFT.US

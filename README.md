@@ -2,36 +2,59 @@
 
 [![build](https://github.com/OWNER/quantdesk/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/quantdesk/actions/workflows/ci.yml)
 
-QuantDesk is a quant backtesting engine that tests trading strategies on historical price data. Feed it a price series, plug in a strategy, and get back a clean set of performance metrics — total return, drawdown, risk-adjusted returns, and trade statistics — over a simple REST API. It runs fully offline against bundled sample data, so there is nothing to configure and no external services to reach.
+QuantDesk is a quant research and paper-trading console built on Spring Boot. It backtests strategies on historical price data, pulls live market data and news sentiment, scans a US large-cap universe for momentum, and routes signals through a risk-checked trading engine — in simulation or against an IBKR **paper** account, never with real money. Backtests and all tests run fully offline against bundled CSV data.
+
+## SAFETY
+
+> **QuantDesk never trades real money.** The only trading modes are `OFF` (default — the engine does nothing), `DRY_RUN` (signals are logged, no orders are placed anywhere), and `PAPER` (orders go to a simulated broker or an IBKR **paper** account). There is no real-money mode in the codebase. Every order — paper or simulated — must first pass the risk manager (position and exposure caps) and the news sentiment veto, and the dashboard kill switch (`POST /trading/kill`) flips the engine to `OFF` instantly. Nothing in this project is investment advice.
 
 ## Module flow
 
 ```mermaid
 flowchart LR
-    marketdata[marketdata] --> strategy[strategy]
-    marketdata --> indicator[indicator]
-    strategy --> backtest[backtest]
+    marketdata[marketdata] --> indicator[indicator]
+    marketdata --> strategy[strategy]
+    marketdata --> universe[universe scanner]
     indicator --> strategy
-    backtest --> web[web]
-    risk[risk] --> backtest
-
-    news[news + sentiment]:::planned
-    ibkr[IBKR paper execution]:::planned
-    news -.-> strategy
-    backtest -.-> ibkr
-
-    classDef planned fill:#f5f5f5,stroke:#bbb,stroke-dasharray:5 5,color:#666;
+    strategy --> backtest[backtest]
+    strategy --> engine[trading engine]
+    universe --> engine
+    news[news + sentiment] --> engine
+    risk[risk] --> engine
+    engine --> execution[execution: simulated / IBKR paper]
+    backtest --> web[web + dashboard]
+    engine --> web
 ```
 
-Solid arrows are the modules that exist today. Dashed nodes (`news + sentiment`, `IBKR paper execution`) are planned — see the roadmap below.
+The universe scanner ranks the whole universe by momentum and hands the top names to the trading engine, which sizes and risk-checks every order before it reaches the (paper-only) execution layer.
 
 ## Features
 
 - **Pluggable `Strategy` interface** — drop in a new strategy by implementing a single-method contract; the engine does not care how the signal is produced.
 - **Built-in strategies** — SMA crossover, RSI, Momentum, and Buy-and-Hold.
+- **Universe scanner** — cross-sectional momentum ranking over ~100 US large caps, feeding an automatic top-5 rotation portfolio.
+- **News sentiment** — headlines are scored and negative sentiment vetoes buys.
 - **Performance metrics** — total return, maximum drawdown, Sharpe ratio, Sortino ratio, and CAGR, plus trade count and win rate.
-- **Sample data included** — a bundled `SAMPLE` price series so the engine runs out of the box with no data setup.
-- **REST API** — run a backtest and read the metrics as JSON via a single HTTP endpoint.
+- **Sample data included** — bundled CSV price series so the engine and all tests run offline with no data setup.
+- **REST API + dashboard** — backtests, scan results, positions, trade log, and trading controls as JSON and as a single-page dashboard.
+
+## Universe scanner & momentum strategy
+
+The universe lives in `data/universe.csv` — roughly 100 US large caps as a plain CSV that you can edit to change what gets scanned.
+
+Each scan computes **cross-sectional momentum**: every symbol's trailing return over a lookback of **63 trading days** (about three months), ranked best to worst. The trading engine holds the **top 5** and rebalances automatically: it sells positions that drop out of the top 5, buys new entrants, and targets equal weight per position. Every rebalance order still passes the news sentiment veto and the risk caps before execution.
+
+Endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /scan` | Latest ranking (rank, symbol, momentum score, last price, data availability) and `lastScanAt` |
+| `POST /scan/run` | Trigger a scan immediately |
+| `GET /backtest/portfolio` | Backtest the cross-sectional momentum portfolio on historical data |
+
+**An honest note on momentum.** Cross-sectional momentum is one of the best-documented historical anomalies in equity markets (Jegadeesh & Titman, *Returns to Buying Winners and Selling Losers*, Journal of Finance, 1993). It has also suffered long droughts and violent crashes, and a documented historical edge is exactly that — historical. Past performance guarantees nothing about the future.
+
+Prefer trading a fixed watchlist instead of the scanned universe? Set `quantdesk.trading.universe-mode=false` and the engine trades the configured watchlist as before.
 
 ## Tech stack
 
@@ -47,7 +70,7 @@ Solid arrows are the modules that exist today. Dashed nodes (`news + sentiment`,
 mvn spring-boot:run
 ```
 
-Then run a backtest against the bundled sample series:
+Open the dashboard at `http://localhost:8080/` or run a backtest against the bundled sample series:
 
 ```
 GET http://localhost:8080/backtest?symbol=SAMPLE&fast=10&slow=30
@@ -57,11 +80,6 @@ GET http://localhost:8080/backtest?symbol=SAMPLE&fast=10&slow=30
 
 ## Roadmap
 
-The current release is a self-contained backtesting engine. Planned phases:
+Shipped so far: the backtesting engine, pluggable live market data, LLM news sentiment, risk limits, the universe scanner with automatic momentum rotation, and paper-only execution (simulated broker and IBKR Client Portal paper gateway). Next up: richer portfolio analytics and more data providers.
 
-1. **Live market data** — pluggable market-data feeds so strategies can run against fresh prices instead of only bundled history.
-2. **News sentiment via an LLM** — a `news + sentiment` module that scores headlines with a language model and exposes sentiment as a strategy input.
-3. **Interactive Brokers PAPER-trading execution** — route strategy signals to an IBKR **paper** account to validate execution end to end.
-4. **Risk limits** — position sizing, exposure caps, and stop rules enforced by the `risk` module.
-
-> **Out of scope for now:** live and real-money trading. The execution roadmap targets **paper trading only** and requires a broker paper account plus a compliance review before any orders — simulated or otherwise — are placed. QuantDesk ships as an offline backtesting tool and does not connect to a broker.
+> **Out of scope, permanently for now: live and real-money trading.** Execution targets **paper trading only** and requires a broker paper account plus a compliance review before any orders — simulated or otherwise — are placed.

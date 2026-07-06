@@ -13,10 +13,15 @@ import ch.quantdesk.news.SentimentScore;
 import ch.quantdesk.risk.PositionSizer;
 import ch.quantdesk.strategy.Signal;
 import ch.quantdesk.strategy.SmaCrossoverStrategy;
+import ch.quantdesk.universe.UniverseScanner;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -29,8 +34,10 @@ public class TradingEngine {
     private final RiskProperties riskProperties;
     private final RiskManager riskManager;
     private final TradeLog tradeLog;
+    private final UniverseScanner universeScanner;
     private final Optional<NewsProvider> newsProvider;
     private final Optional<SentimentAnalyzer> sentimentAnalyzer;
+    private final boolean universeMode;
 
     private volatile Instant lastCycleAt;
     private volatile LocalDate currentDay;
@@ -42,16 +49,20 @@ public class TradingEngine {
                          RiskProperties riskProperties,
                          RiskManager riskManager,
                          TradeLog tradeLog,
+                         UniverseScanner universeScanner,
                          Optional<NewsProvider> newsProvider,
-                         Optional<SentimentAnalyzer> sentimentAnalyzer) {
+                         Optional<SentimentAnalyzer> sentimentAnalyzer,
+                         @Value("${quantdesk.trading.universe-mode}") boolean universeMode) {
         this.marketData = marketData;
         this.broker = broker;
         this.tradingProperties = tradingProperties;
         this.riskProperties = riskProperties;
         this.riskManager = riskManager;
         this.tradeLog = tradeLog;
+        this.universeScanner = universeScanner;
         this.newsProvider = newsProvider;
         this.sentimentAnalyzer = sentimentAnalyzer;
+        this.universeMode = universeMode;
     }
 
     @Scheduled(fixedDelayString = "${quantdesk.trading.interval-ms}",
@@ -61,12 +72,10 @@ public class TradingEngine {
             return;
         }
         rollDay();
-        for (String symbol : tradingProperties.getSymbols()) {
-            try {
-                evaluate(symbol);
-            } catch (Exception e) {
-                log(symbol, "ERROR", messageOf(e), 0L, BigDecimal.ZERO, tradingProperties.getMode());
-            }
+        if (universeMode) {
+            rebalanceCycle();
+        } else {
+            watchlistCycle();
         }
         lastCycleAt = Instant.now();
     }
@@ -83,6 +92,94 @@ public class TradingEngine {
             equity = equity.add(value);
         }
         return equity;
+    }
+
+    private void watchlistCycle() {
+        for (String symbol : tradingProperties.getSymbols()) {
+            try {
+                evaluate(symbol);
+            } catch (Exception e) {
+                log(symbol, "ERROR", messageOf(e), 0L, BigDecimal.ZERO, tradingProperties.getMode());
+            }
+        }
+    }
+
+    private void rebalanceCycle() {
+        TradingMode mode = tradingProperties.getMode();
+        List<String> targets;
+        try {
+            if (universeScanner.getLastScan().isEmpty()) {
+                universeScanner.scan();
+            }
+            targets = universeScanner.topSymbols();
+        } catch (Exception e) {
+            log("*", "ERROR", messageOf(e), 0L, BigDecimal.ZERO, mode);
+            return;
+        }
+        Set<String> held = new HashSet<>();
+        for (Position position : broker.positions()) {
+            held.add(position.symbol());
+            try {
+                if (targets.contains(position.symbol())) {
+                    log(position.symbol(), "KEEP", "still in target universe",
+                            position.quantity(), position.avgPrice(), mode);
+                } else {
+                    exitPosition(position, mode);
+                }
+            } catch (Exception e) {
+                log(position.symbol(), "ERROR", messageOf(e), 0L, BigDecimal.ZERO, mode);
+            }
+        }
+        for (String symbol : targets) {
+            if (held.contains(symbol)) {
+                continue;
+            }
+            try {
+                enterTarget(symbol, targets.size(), mode);
+            } catch (Exception e) {
+                log(symbol, "ERROR", messageOf(e), 0L, BigDecimal.ZERO, mode);
+            }
+        }
+    }
+
+    private void exitPosition(Position position, TradingMode mode) {
+        BigDecimal price = marketData.lastPrice(position.symbol());
+        if (mode == TradingMode.DRY_RUN) {
+            log(position.symbol(), "DRY_SELL", "left target universe", position.quantity(), price, mode);
+            return;
+        }
+        OrderRequest request = new OrderRequest(position.symbol(), Side.SELL, position.quantity());
+        OrderResult result = broker.placeOrder(request);
+        log(position.symbol(), "SELL", "left target universe -> " + result.status(),
+                position.quantity(), price, mode);
+    }
+
+    private void enterTarget(String symbol, int topN, TradingMode mode) {
+        BigDecimal price = marketData.lastPrice(symbol);
+        double fraction = Math.min(1.0 / topN, riskProperties.getMaxPositionFraction());
+        long quantity = PositionSizer.fixedFraction(broker.cash(), price, fraction);
+        if (quantity <= 0L) {
+            log(symbol, "HOLD", "insufficient cash", 0L, price, mode);
+            return;
+        }
+        if (newsProvider.isPresent() && sentimentAnalyzer.isPresent()) {
+            SentimentScore sentiment = sentimentAnalyzer.get().analyze(newsProvider.get().latest(symbol));
+            if (sentiment.score() < -0.5) {
+                log(symbol, "VETO", "negative news", quantity, price, mode);
+                return;
+            }
+        }
+        if (mode == TradingMode.DRY_RUN) {
+            log(symbol, "DRY_BUY", "entered target universe", quantity, price, mode);
+            return;
+        }
+        OrderRequest request = new OrderRequest(symbol, Side.BUY, quantity);
+        if (riskManager.allowOrder(request, price, broker.cash(), equity(), dayStartEquity)) {
+            OrderResult result = broker.placeOrder(request);
+            log(symbol, "BUY", "entered target universe -> " + result.status(), quantity, price, mode);
+        } else {
+            log(symbol, "BLOCKED", riskManager.lastRejectReason(), quantity, price, mode);
+        }
     }
 
     private void rollDay() {
