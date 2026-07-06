@@ -1,0 +1,10 @@
+spring:
+  application:
+    name: quantdesk
+
+server:
+  port: 8080
+
+quantdesk:
+  backtest:
+    starting-cash: 10000.00
