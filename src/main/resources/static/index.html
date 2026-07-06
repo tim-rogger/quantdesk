@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QuantDesk</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%231e293b'/%3E%3Cpath d='M3 11l3-3 2 2 5-6' stroke='%2338bdf8' stroke-width='2' fill='none'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #0f172a;
+  --card: #1e293b;
+  --border: #334155;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #38bdf8;
+  --green: #4ade80;
+  --red: #f87171;
+  --amber: #fbbf24;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  min-height: 100vh;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(30, 41, 59, 0.5);
+  position: sticky;
+  top: 0;
+  backdrop-filter: blur(6px);
+  z-index: 10;
+}
+.brand { display: flex; align-items: baseline; gap: 10px; }
+.brand h1 { font-size: 18px; letter-spacing: 0.04em; }
+.brand h1 span { color: var(--accent); }
+.brand .sub { color: var(--muted); font-size: 12px; }
+.controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+  display: inline-block;
+}
+.dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot.bad { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.badge {
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.badge.m-off { border-color: var(--muted); color: var(--muted); background: rgba(148, 163, 184, 0.08); }
+.badge.m-dry { border-color: var(--amber); color: var(--amber); background: rgba(251, 191, 36, 0.08); }
+.badge.m-paper { border-color: var(--accent); color: var(--accent); background: rgba(56, 189, 248, 0.08); }
+.badge.m-unknown { border-color: var(--red); color: var(--red); background: rgba(248, 113, 113, 0.08); }
+.modes { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.modes button {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+}
+.modes button + button { border-left: 1px solid var(--border); }
+.modes button:hover { color: var(--text); background: rgba(56, 189, 248, 0.08); }
+.modes button.active { color: #0f172a; background: var(--accent); }
+.modes button:disabled { opacity: 0.5; cursor: wait; }
+.kill {
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid var(--red);
+  color: var(--red);
+  padding: 7px 16px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.kill:hover { background: var(--red); color: #0f172a; }
+.kill:disabled { opacity: 0.6; cursor: wait; }
+main {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 20px 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  overflow: hidden;
+}
+.card.wide { grid-column: 1 / -1; }
+.card h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+.stat {
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.value { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pos { color: var(--green); }
+.neg { color: var(--red); }
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+td { padding: 8px 10px; border-bottom: 1px solid rgba(51, 65, 85, 0.5); font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: none; }
+th.num, td.num { text-align: right; }
+td.empty, li.empty { color: var(--muted); font-style: italic; text-align: center; padding: 18px 10px; }
+.scroll { max-height: 320px; overflow-y: auto; }
+.newsForm { display: flex; gap: 8px; margin-bottom: 14px; }
+.newsForm input {
+  flex: 1;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 7px 12px;
+  font-size: 13px;
+}
+.newsForm input:focus { outline: none; border-color: var(--accent); }
+.newsForm button {
+  background: var(--accent);
+  border: none;
+  color: #0f172a;
+  font-weight: 700;
+  padding: 7px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.newsForm button:hover { filter: brightness(1.1); }
+.newsForm button:disabled { opacity: 0.5; cursor: wait; }
+.sentiment { margin-bottom: 14px; }
+.sentHead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--red), #64748b 50%, var(--green));
+  opacity: 0.9;
+}
+.marker {
+  position: absolute;
+  top: -4px;
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--text);
+  box-shadow: 0 0 0 2px var(--bg);
+  transform: translateX(-50%);
+  transition: left 0.4s ease;
+  display: none;
+}
+.trackScale { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 4px; }
+#sentRationale { font-size: 12px; margin-top: 8px; }
+.muted { color: var(--muted); }
+ul.news { list-style: none; }
+ul.news li { padding: 9px 2px; border-bottom: 1px solid rgba(51, 65, 85, 0.5); line-height: 1.4; }
+ul.news li:last-child { border-bottom: none; }
+ul.news a { color: var(--text); text-decoration: none; }
+ul.news a:hover { color: var(--accent); }
+.when { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+  .card.wide { grid-column: auto; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>Quant<span>Desk</span></h1>
+    <span class="sub">paper trading console</span>
+  </div>
+  <div class="controls">
+    <span id="connDot" class="dot" title="API connection"></span>
+    <span id="modeBadge" class="badge m-unknown">&mdash;</span>
+    <div class="modes" id="modeButtons">
+      <button type="button" data-mode="OFF">OFF</button>
+      <button type="button" data-mode="DRY_RUN">DRY_RUN</button>
+      <button type="button" data-mode="PAPER">PAPER</button>
+    </div>
+    <button type="button" id="killBtn" class="kill">KILL SWITCH</button>
+  </div>
+</header>
+<main>
+  <section class="card wide">
+    <h2>Status</h2>
+    <div class="stats">
+      <div class="stat"><span class="label">Mode</span><span class="value" id="stMode">&mdash;</span></div>
+      <div class="stat"><span class="label">Cash</span><span class="value" id="stCash">&mdash;</span></div>
+      <div class="stat"><span class="label">Equity</span><span class="value" id="stEquity">&mdash;</span></div>
+      <div class="stat"><span class="label">Broker</span><span class="value" id="stBroker">&mdash;</span></div>
+      <div class="stat"><span class="label">Last cycle</span><span class="value" id="stCycle">&mdash;</span></div>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Positions</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Symbol</th><th class="num">Qty</th><th class="num">Avg price</th><th class="num">Cost basis</th></tr></thead>
+        <tbody id="posBody"><tr><td colspan="4" class="empty">Loading&hellip;</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+  <section class="card">
+    <h2>News &amp; sentiment</h2>
+    <div class="newsForm">
+      <input id="newsSymbol" value="AAPL.US" placeholder="Symbol, e.g. AAPL.US" spellcheck="false">
+      <button type="button" id="newsBtn">Load</button>
+    </div>
+    <div class="sentiment">
+      <div class="sentHead">
+        <span class="label">Sentiment</span>
+        <span class="value" id="sentValue">&mdash;</span>
+      </div>
+      <div class="track"><div class="marker" id="sentMarker"></div></div>
+      <div class="trackScale"><span>-1</span><span>0</span><span>+1</span></div>
+      <p id="sentRationale" class="muted"></p>
+    </div>
+    <ul class="news" id="newsList"><li class="empty">Enter a symbol and press Load</li></ul>
+  </section>
+  <section class="card wide">
+    <h2>Trade log</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th class="num">Qty</th><th class="num">Price</th><th>Detail</th></tr></thead>
+        <tbody id="logBody"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+const getJson = async (url) => {
+  try {
+    const r = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+};
+
+const post = async (url) => {
+  try {
+    const r = await fetch(url, { method: "POST" });
+    return r.ok;
+  } catch {
+    return false;
+  }
+};
+
+const pick = (o, keys) => {
+  if (!o || typeof o !== "object") return undefined;
+  for (const k of keys) {
+    if (o[k] !== undefined && o[k] !== null) return o[k];
+  }
+  return undefined;
+};
+
+const asArray = (data, keys) => {
+  if (Array.isArray(data)) return data;
+  const v = pick(data, keys);
+  return Array.isArray(v) ? v : [];
+};
+
+const num = (v) => {
+  const n = typeof v === "number" ? v : parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+const money = (v) => {
+  const n = num(v);
+  return n === null ? "—" : n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+const text = (v) => (v === undefined || v === null || v === "" ? "—" : String(v));
+
+const fmtTime = (v) => {
+  if (v === undefined || v === null || v === "") return "—";
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleTimeString();
+};
+
+const fmtDateTime = (v) => {
+  if (v === undefined || v === null || v === "") return "";
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString();
+};
+
+const cell = (tr, value, cls) => {
+  const td = document.createElement("td");
+  td.textContent = value;
+  if (cls) td.className = cls;
+  tr.appendChild(td);
+};
+
+const emptyRow = (tbody, cols, msg) => {
+  const tr = document.createElement("tr");
+  const td = document.createElement("td");
+  td.colSpan = cols;
+  td.className = "empty";
+  td.textContent = msg;
+  tr.appendChild(td);
+  tbody.replaceChildren(tr);
+};
+
+const setBadge = (mode) => {
+  const badge = $("modeBadge");
+  const m = mode ? String(mode).toUpperCase() : "";
+  badge.textContent = m || "OFFLINE";
+  badge.className =
+    "badge " +
+    (m === "PAPER" ? "m-paper" : m === "DRY_RUN" ? "m-dry" : m === "OFF" ? "m-off" : "m-unknown");
+  document.querySelectorAll("#modeButtons button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.mode === m);
+  });
+};
+
+const refreshStatus = async () => {
+  const s = await getJson("/trading/status");
+  const dot = $("connDot");
+  if (!s) {
+    dot.className = "dot bad";
+    setBadge(null);
+    ["stMode", "stCash", "stEquity", "stCycle"].forEach((id) => ($(id).textContent = "—"));
+    const broker = $("stBroker");
+    broker.textContent = "—";
+    broker.className = "value";
+    return;
+  }
+  dot.className = "dot ok";
+  const mode = pick(s, ["mode", "tradingMode"]);
+  setBadge(mode);
+  $("stMode").textContent = text(mode);
+  $("stCash").textContent = money(pick(s, ["cash", "availableCash"]));
+  $("stEquity").textContent = money(pick(s, ["equity", "totalEquity", "accountValue"]));
+  const raw = pick(s, ["brokerConnected", "connected", "broker"]);
+  const connected = raw === true || raw === "true";
+  const broker = $("stBroker");
+  broker.textContent = connected ? "Connected" : "Offline";
+  broker.className = "value " + (connected ? "pos" : "neg");
+  $("stCycle").textContent = fmtTime(pick(s, ["lastCycle", "lastCycleAt", "lastCycleTime", "lastRun"]));
+};
+
+const refreshPositions = async () => {
+  const data = await getJson("/positions");
+  const tbody = $("posBody");
+  const rows = asArray(data, ["positions", "items"]);
+  if (!rows.length) {
+    emptyRow(tbody, 4, data ? "No open positions" : "Positions unavailable");
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const p of rows) {
+    const tr = document.createElement("tr");
+    cell(tr, text(pick(p, ["symbol", "ticker"])));
+    const qty = num(pick(p, ["quantity", "qty", "shares"]));
+    cell(tr, qty === null ? "—" : String(qty), "num");
+    const avg = num(pick(p, ["avgPrice", "averagePrice", "price"]));
+    cell(tr, avg === null ? "—" : money(avg), "num");
+    cell(tr, qty !== null && avg !== null ? money(qty * avg) : "—", "num");
+    frag.appendChild(tr);
+  }
+  tbody.replaceChildren(frag);
+};
+
+const logStamp = (e) => {
+  const d = new Date(pick(e, ["timestamp", "time", "at", "executedAt", "date"]));
+  return Number.isNaN(d.getTime()) ? null : d.getTime();
+};
+
+const actionClass = (action) => {
+  if (/BUY|LONG/.test(action)) return "pos";
+  if (/SELL|SHORT|EXIT|CLOSE|KILL/.test(action)) return "neg";
+  return "";
+};
+
+const refreshLog = async () => {
+  const data = await getJson("/trading/log");
+  const tbody = $("logBody");
+  const raw = asArray(data, ["entries", "log", "trades", "items"]);
+  if (!raw.length) {
+    emptyRow(tbody, 6, data ? "No trades yet" : "Trade log unavailable");
+    return;
+  }
+  const rows = raw.slice();
+  if (rows.every((e) => logStamp(e) !== null)) {
+    rows.sort((a, b) => logStamp(b) - logStamp(a));
+  } else {
+    rows.reverse();
+  }
+  const frag = document.createDocumentFragment();
+  for (const e of rows.slice(0, 200)) {
+    const tr = document.createElement("tr");
+    cell(tr, fmtTime(pick(e, ["timestamp", "time", "at", "executedAt", "date"])));
+    cell(tr, text(pick(e, ["symbol", "ticker"])));
+    const action = text(pick(e, ["action", "side", "signal", "type"])).toUpperCase();
+    cell(tr, action, actionClass(action));
+    const qty = num(pick(e, ["quantity", "qty", "shares"]));
+    cell(tr, qty === null ? "—" : String(qty), "num");
+    cell(tr, money(pick(e, ["price", "fillPrice", "avgPrice"])), "num");
+    cell(tr, text(pick(e, ["status", "detail", "note", "message", "reason", "mode"])));
+    frag.appendChild(tr);
+  }
+  tbody.replaceChildren(frag);
+};
+
+const renderSentiment = (score, rationale) => {
+  const value = $("sentValue");
+  const marker = $("sentMarker");
+  const rat = $("sentRationale");
+  if (score === null) {
+    value.textContent = "—";
+    value.className = "value";
+    marker.style.display = "none";
+    rat.textContent = "";
+    return;
+  }
+  const c = Math.max(-1, Math.min(1, score));
+  marker.style.display = "block";
+  marker.style.left = ((c + 1) / 2) * 100 + "%";
+  value.textContent = (c > 0 ? "+" : "") + c.toFixed(2);
+  value.className = "value " + (c > 0.05 ? "pos" : c < -0.05 ? "neg" : "");
+  rat.textContent = rationale || "";
+};
+
+const noteItem = (msg) => {
+  const li = document.createElement("li");
+  li.className = "empty";
+  li.textContent = msg;
+  return li;
+};
+
+const loadNews = async () => {
+  const symbol = $("newsSymbol").value.trim().toUpperCase();
+  if (!symbol) return;
+  const btn = $("newsBtn");
+  btn.disabled = true;
+  const data = await getJson("/news/" + encodeURIComponent(symbol));
+  btn.disabled = false;
+  const list = $("newsList");
+  if (!data) {
+    renderSentiment(null, "");
+    list.replaceChildren(noteItem("News unavailable for " + symbol));
+    return;
+  }
+  let score = null;
+  let rationale = "";
+  const s = pick(data, ["sentiment", "sentimentScore"]);
+  if (s && typeof s === "object") {
+    score = num(pick(s, ["score", "value"]));
+    const r = pick(s, ["rationale", "reason", "summary"]);
+    rationale = r === undefined ? "" : String(r);
+  } else {
+    score = num(pick(data, ["score", "sentiment"]));
+    const r = pick(data, ["rationale", "reason", "summary"]);
+    rationale = r === undefined ? "" : String(r);
+  }
+  renderSentiment(score, rationale);
+  const items = asArray(data, ["items", "news", "headlines", "articles"]);
+  if (!items.length) {
+    list.replaceChildren(noteItem("No headlines for " + symbol));
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const it of items.slice(0, 20)) {
+    const li = document.createElement("li");
+    const headline = typeof it === "string" ? it : text(pick(it, ["headline", "title"]));
+    const url = typeof it === "object" ? pick(it, ["url", "link"]) : undefined;
+    if (typeof url === "string" && /^https?:/i.test(url)) {
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = headline;
+      li.appendChild(a);
+    } else {
+      li.appendChild(document.createTextNode(headline));
+    }
+    const when = typeof it === "object" ? pick(it, ["publishedAt", "published", "time", "timestamp", "date"]) : undefined;
+    const whenText = fmtDateTime(when);
+    if (whenText) {
+      const span = document.createElement("span");
+      span.className = "when";
+      span.textContent = whenText;
+      li.appendChild(span);
+    }
+    frag.appendChild(li);
+  }
+  list.replaceChildren(frag);
+};
+
+$("killBtn").addEventListener("click", async () => {
+  const btn = $("killBtn");
+  btn.disabled = true;
+  const ok = await post("/trading/kill");
+  btn.textContent = ok ? "KILLED" : "FAILED";
+  setTimeout(() => {
+    btn.textContent = "KILL SWITCH";
+    btn.disabled = false;
+  }, 1500);
+  refreshStatus();
+  refreshLog();
+});
+
+document.querySelectorAll("#modeButtons button").forEach((b) => {
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    await post("/trading/mode?value=" + encodeURIComponent(b.dataset.mode));
+    b.disabled = false;
+    refreshStatus();
+  });
+});
+
+$("newsBtn").addEventListener("click", loadNews);
+$("newsSymbol").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") loadNews();
+});
+
+const refreshAll = () => {
+  refreshStatus();
+  refreshPositions();
+  refreshLog();
+};
+
+refreshAll();
+setInterval(refreshAll, 5000);
+</script>
+</body>
+</html>

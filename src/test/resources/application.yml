@@ -9,17 +9,16 @@ quantdesk:
   backtest:
     starting-cash: 10000.00
   marketdata:
-    provider: stooq
+    provider: csv
   news:
-    enabled: true
+    enabled: false
   sentiment:
     provider: lexicon
     model: claude-opus-4-8
   trading:
-    mode: DRY_RUN
+    mode: "OFF"
     symbols:
-      - AAPL.US
-      - MSFT.US
+      - SAMPLE
     interval-ms: 60000
     initial-delay-ms: 60000
     strategy:
