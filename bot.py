@@ -26,6 +26,8 @@ COLUMNS = ("Symbol", "Position", "Entry Price", "Last", "Levels", "Status")
 
 
 def format_levels(row: dict) -> str:
+    if row.get("exit_pending"):
+        return "Trend gebrochen – Verkauf läuft…"
     if not row["levels"]:
         if row["entry_pending"]:
             return f"{row['num_levels']} Levels – Einstieg läuft…"
@@ -80,7 +82,7 @@ class TradingBotGUI:
         table = tk.Frame(root)
         table.pack(fill=tk.BOTH, expand=True, padx=10)
         self.tree = ttk.Treeview(table, columns=COLUMNS, show="headings", height=8)
-        widths = {"Symbol": 80, "Position": 70, "Entry Price": 90, "Last": 120, "Levels": 420, "Status": 60}
+        widths = {"Symbol": 80, "Position": 70, "Entry Price": 90, "Last": 120, "Levels": 380, "Status": 130}
         for col in COLUMNS:
             self.tree.heading(col, text=col)
             self.tree.column(col, width=widths[col], anchor=tk.W if col == "Levels" else tk.CENTER)
@@ -248,7 +250,7 @@ class TradingBotGUI:
                 _fmt_price(row["entry_price"]),
                 last,
                 format_levels(row),
-                row["status"],
+                row["status"] + (f" · {row['trend_label']}" if row.get("trend_label") else ""),
             )
             if self.tree.exists(row["symbol"]):
                 self.tree.item(row["symbol"], values=values)

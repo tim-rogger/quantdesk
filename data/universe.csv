@@ -1,5 +1,6 @@
 # ~50 US-Aktien fuer research.py: jede 3. aus der alten QuantDesk-Liste (Grosskonzerne von heute)
-# + 15 in den letzten Jahren schwache Titel. Achtung: Survivorship-Bias - alles Firmen, die es heute noch gibt.
+# + 14 in den letzten Jahren schwache Titel (WBA entfernt: 2025 von der Boerse genommen, keine Kursdaten mehr).
+# Achtung: Survivorship-Bias - alles Firmen, die es heute noch gibt.
 symbol,name,group
 AAPL,Apple,largecap
 GOOGL,Alphabet,largecap
@@ -36,7 +37,6 @@ ADP,Automatic Data Processing,largecap
 LRCX,Lam Research,largecap
 CDNS,Cadence Design Systems,largecap
 NFLX,Netflix,largecap
-WBA,Walgreens Boots Alliance,schwach
 PARA,Paramount Global,schwach
 M,Macy's,schwach
 KSS,Kohl's,schwach

@@ -16,6 +16,7 @@ from typing import Callable
 
 from quantdesk import storage
 from quantdesk.broker.base import LOGIN_HINT, Broker, BrokerError, Order, Position
+from quantdesk.journal import Journal
 from quantdesk.marketdata import MarketData, Quote
 from quantdesk.storage import StorageError
 from quantdesk.strategy import (
@@ -54,6 +55,8 @@ class Engine:
         interval_seconds: float = 15,
         events: queue.Queue | None = None,
         clock: Callable[[], float] = time.time,
+        trend: Callable[[str, int], bool | None] | None = None,
+        journal: Journal | None = None,
     ):
         self.broker = broker
         self.marketdata = marketdata
@@ -62,6 +65,8 @@ class Engine:
         self.interval_seconds = interval_seconds
         self.events: queue.Queue = events if events is not None else queue.Queue()
         self._clock = clock
+        self.trend = trend  # (Symbol, SMA-Tage) -> True/False/None (None = unbekannt)
+        self.journal = journal
         self._lock = threading.RLock()
         self._halt = threading.Event()  # STOP ALL
         self._shutdown = threading.Event()
@@ -120,6 +125,8 @@ class Engine:
                         "levels": [(lv.level, lv.price, lv.status) for lv in s.levels],
                         "entry_pending": s.entry_price is None and s.entry_order_id is not None,
                         "open_orders": len(s.open_order_ids()),
+                        "trend_label": s.trend_label,
+                        "exit_pending": s.exit_order_id is not None,
                         "last_price": q.price if q else None,
                         "price_source": q.source if q else None,
                     }
@@ -139,14 +146,24 @@ class Engine:
             self._save()
 
     # ------------------------------------------------- Befehle (aus der GUI)
-    def add_system(self, symbol: str, num_levels: int, drawdown: float) -> None:
+    def add_system(
+        self,
+        symbol: str,
+        num_levels: int,
+        drawdown: float,
+        trend_sma: int | None = None,
+        trend_exit: bool = False,
+        order_usd: float | None = None,
+    ) -> None:
         with self._lock:
             if symbol in self.systems:
                 raise ValidationError(f"{symbol} ist schon in der Liste.")
-            self.systems[symbol] = EquitySystem(symbol, num_levels, drawdown)
+            s = EquitySystem(symbol, num_levels, drawdown, trend_sma=trend_sma, trend_exit=trend_exit, order_usd=order_usd)
+            self.systems[symbol] = s
             self._save()
         self._publish()
-        self._emit("info", f"{symbol} hinzugefügt: {num_levels} Levels à {drawdown:.2%} (Status Off).", symbol)
+        extra = f", {s.trend_label}" if s.trend_label else ""
+        self._emit("info", f"{symbol} hinzugefügt: {num_levels} Levels à {drawdown:.2%}{extra} (Status Off).", symbol)
 
     def toggle(self, symbols: list[str]) -> None:
         with self._lock:
@@ -247,6 +264,7 @@ class Engine:
             self._finish_cycle()
             return
         self._clear("read")
+        trend_states = self._trend_states(active)
         for sym in active:
             if self.paused:
                 break
@@ -255,13 +273,47 @@ class Engine:
                 if system is None or not system.is_on:
                     continue
                 try:
-                    self._trade_system(system, positions.get(sym), orders)
+                    self._trade_system(system, positions.get(sym), orders, trend_states.get(sym, True))
                     self._clear(f"trade:{sym}")
                 except BrokerError as e:
                     self._emit("error", f"{sym}: {e}", sym, key=f"trade:{sym}")
                 self._save()
             self._publish()
         self._finish_cycle()
+
+    def _trend_states(self, symbols: list[str]) -> dict[str, bool | None]:
+        """Trendfilter pro Symbol (Netzwerk, deshalb ausserhalb des Locks)."""
+        with self._lock:
+            wanted = {sym: self.systems[sym].trend_sma for sym in symbols
+                      if sym in self.systems and self.systems[sym].trend_sma}
+        states = {}
+        for sym, sma in wanted.items():
+            state = self.trend(sym, sma) if self.trend else None
+            states[sym] = state
+            if state is None:
+                self._emit("warn", f"{sym}: Trend (SMA{sma}) unbekannt – keine neuen Käufe, kein Trend-Verkauf.", sym,
+                           key=f"trend:{sym}")
+            else:
+                self._clear(f"trend:{sym}")
+        return states
+
+    def _qty(self, s: EquitySystem, price: float | None) -> int | None:
+        """Stückzahl: fester Dollarbetrag wie im Backtest (gerundet, mind. 1) oder feste Stückzahl."""
+        if s.order_usd is None:
+            return self.order_qty
+        if not price or price <= 0:
+            return None
+        return max(1, round(s.order_usd / price))
+
+    def _record(self, s: EquitySystem, side: str, qty: float, price: float, kind: str, order: Order | None,
+                order_id: str) -> None:
+        if self.journal is None:
+            return
+        try:
+            simulated = s.simulated or (order.simulated if order else False) or str(order_id).startswith("DRY-")
+            self.journal.record(s.symbol, side, qty, price, kind, order_id, simulated)
+        except OSError as e:
+            self._emit("error", f"Journal nicht schreibbar: {e}", key="journal")
 
     def _finish_cycle(self) -> None:
         self._status["last_cycle"] = self._clock()
@@ -308,10 +360,19 @@ class Engine:
                 self._emit("warn", f"{sym}: kein Preis (weder IBKR noch Stooq/Yahoo).", sym, key=f"quote:{sym}")
 
     # ----------------------------------------------------------- Strategie
-    def _trade_system(self, s: EquitySystem, pos: Position | None, orders: list[Order]) -> None:
+    def _trade_system(self, s: EquitySystem, pos: Position | None, orders: list[Order],
+                      trend_ok: bool | None = True) -> None:
         s.position = pos.qty if pos else 0.0
+        if s.exit_order_id:
+            self._handle_exit_pending(s, pos, orders)
+            return
+        ok = True if s.trend_sma is None else trend_ok
+        if s.trend_exit and ok is False:
+            self._trend_exit(s, pos, orders)
+            return
+        allow_new = ok is True  # neue Käufe nur bei bekanntem Aufwärtstrend (wie im Backtest)
         if s.entry_price is None:
-            self._handle_entry(s, pos, orders)
+            self._handle_entry(s, pos, orders, allow_new)
             if s.entry_price is None:
                 return
         s.ensure_levels()
@@ -322,6 +383,7 @@ class Engine:
                     continue
                 if order.is_filled:
                     lv.status = FILLED
+                    self._record(s, "BUY", order.qty, order.avg_fill_price or lv.price, "level", order, order.order_id)
                     self._emit("order", f"{s.symbol}: Level {lv.level} @ {lv.price:.2f} gefüllt.", s.symbol)
                 elif order.is_cancelled:
                     lv.status = CANCELLED
@@ -329,23 +391,79 @@ class Engine:
                 elif lv.order_id is None:
                     lv.order_id = order.order_id
             elif lv.status == PENDING:
-                if self.paused:
+                if self.paused or not allow_new:
                     return
                 existing = find_level_order(lv, s.symbol, orders)
                 if existing is not None and existing.is_open:
                     lv.status, lv.order_id = PLACED, existing.order_id
                     self._emit("info", f"{s.symbol}: offene Order {existing.order_id} für Level {lv.level} übernommen.", s.symbol)
                     continue
-                result = self.broker.place_limit_order(s.symbol, "BUY", self.order_qty, lv.price)
+                qty = self._qty(s, lv.price)
+                result = self.broker.place_limit_order(s.symbol, "BUY", qty, lv.price)
                 lv.status, lv.order_id = PLACED, result.order_id
                 s.simulated = s.simulated or result.order_id.startswith("DRY-")
                 self._emit(
                     "order",
-                    f"{s.symbol}: Limit-Buy {self.order_qty} @ {lv.price:.2f} (Level {lv.level}) platziert – ID {result.order_id}.",
+                    f"{s.symbol}: Limit-Buy {qty} @ {lv.price:.2f} (Level {lv.level}) platziert – ID {result.order_id}.",
                     s.symbol,
                 )
 
-    def _handle_entry(self, s: EquitySystem, pos: Position | None, orders: list[Order]) -> None:
+    def _trend_exit(self, s: EquitySystem, pos: Position | None, orders: list[Order]) -> None:
+        """Trend gebrochen: offene Orders stornieren, ganze Position per Market verkaufen (Backtest: Verkauf zum Open)."""
+        if self.paused:
+            return
+        had_state = s.entry_price is not None or s.entry_order_id is not None or bool(s.levels)
+        by_id = {o.order_id: o for o in orders}
+        to_cancel = [lv.order_id for lv in s.levels if lv.status == PLACED and lv.order_id]
+        if s.entry_order_id and s.entry_price is None:
+            to_cancel.append(s.entry_order_id)
+        for order_id in to_cancel:
+            o = by_id.get(order_id)
+            if o is None or o.is_open:
+                try:
+                    self.broker.cancel_order(order_id)
+                    self._emit("order", f"{s.symbol}: Trend unter SMA{s.trend_sma} – Order {order_id} storniert.", s.symbol)
+                except BrokerError as e:
+                    self._emit("error", f"{s.symbol}: Storno von {order_id} fehlgeschlagen: {e}", s.symbol)
+        for lv in s.levels:
+            if lv.status == PLACED:
+                lv.status = CANCELLED
+        qty = int(round(pos.qty)) if pos is not None and pos.qty > 0 else 0
+        if qty > 0:
+            result = self.broker.place_market_order(s.symbol, "SELL", qty)
+            s.exit_order_id, s.exit_order_time = result.order_id, self._clock()
+            s.simulated = s.simulated or result.order_id.startswith("DRY-")
+            self._emit("order", f"{s.symbol}: Trend unter SMA{s.trend_sma} – Market-Sell {qty} platziert – ID {result.order_id}.",
+                       s.symbol)
+        elif had_state:
+            s.reset_trading_state()
+            self._emit("info", f"{s.symbol}: Trend unter SMA{s.trend_sma} – keine Position, warte auf Aufwärtstrend.", s.symbol)
+
+    def _handle_exit_pending(self, s: EquitySystem, pos: Position | None, orders: list[Order]) -> None:
+        order = next((o for o in orders if o.order_id == s.exit_order_id), None)
+        if order is not None and order.is_filled:
+            quote = self.quotes.get(s.symbol)
+            price = order.avg_fill_price or (quote.price if quote else 0.0)
+            self._record(s, "SELL", order.qty, price, "exit", order, order.order_id)
+            self._emit("order", f"{s.symbol}: Verkauf gefüllt ({order.qty:g} @ {price:.2f}) – neuer Zyklus bei Aufwärtstrend.",
+                       s.symbol)
+            simulated = s.simulated
+            s.reset_trading_state()
+            s.simulated = simulated
+        elif order is not None and order.is_cancelled:
+            self._emit("warn", f"{s.symbol}: Verkaufs-Order {s.exit_order_id} {order.status} – neuer Versuch nächste Runde.",
+                       s.symbol)
+            s.exit_order_id = s.exit_order_time = None
+        elif order is None and self._clock() - (s.exit_order_time or 0) > ENTRY_ORDER_TIMEOUT:
+            if pos is None or pos.qty <= 0:
+                s.reset_trading_state()
+                self._emit("warn", f"{s.symbol}: Verkaufs-Order nicht mehr auffindbar, keine Position – Zyklus zurückgesetzt.",
+                           s.symbol)
+            else:
+                s.exit_order_id = s.exit_order_time = None
+                self._emit("warn", f"{s.symbol}: Verkaufs-Order nicht mehr auffindbar – neuer Versuch nächste Runde.", s.symbol)
+
+    def _handle_entry(self, s: EquitySystem, pos: Position | None, orders: list[Order], allow_new: bool = True) -> None:
         if pos is not None and pos.qty < 0:
             self._emit("warn", f"{s.symbol}: Short-Position vorhanden – Grid wird nicht gehandelt.", s.symbol, key=f"short:{s.symbol}")
             return
@@ -359,6 +477,10 @@ class Engine:
                 s.entry_price = round(pos.avg_price, 2)
             s.simulated = s.simulated or pos.simulated
             how = "Einstieg gefüllt" if s.entry_order_id else "bestehende Position übernommen"
+            if entry_order is not None and entry_order.is_filled:
+                self._record(s, "BUY", entry_order.qty, s.entry_price, "entry", entry_order, entry_order.order_id)
+            else:
+                self._record(s, "BUY", pos.qty, s.entry_price, "adopted", None, s.entry_order_id or "bestand")
             s.entry_order_id = None
             s.entry_order_time = None
             self._emit("order", f"{s.symbol}: {how}, Einstiegspreis {s.entry_price:.2f}.", s.symbol)
@@ -376,10 +498,16 @@ class Engine:
         if any(o.is_open and o.symbol == s.symbol and o.side == "BUY" and o.order_type == "MKT" for o in orders):
             self._emit("warn", f"{s.symbol}: fremde offene Market-Buy-Order – kein zweiter Einstieg.", s.symbol, key=f"entry:{s.symbol}")
             return
-        if self.paused:
+        if self.paused or not allow_new:
             return
-        result = self.broker.place_market_order(s.symbol, "BUY", self.order_qty)
+        quote = self.quotes.get(s.symbol)
+        qty = self._qty(s, quote.price if quote else None)
+        if qty is None:
+            self._emit("warn", f"{s.symbol}: kein Preis für die Ordergrösse – Einstieg nächste Runde.", s.symbol,
+                       key=f"size:{s.symbol}")
+            return
+        result = self.broker.place_market_order(s.symbol, "BUY", qty)
         s.entry_order_id = result.order_id
         s.entry_order_time = self._clock()
         s.simulated = s.simulated or result.order_id.startswith("DRY-")
-        self._emit("order", f"{s.symbol}: Einstieg Market-Buy {self.order_qty} platziert – ID {result.order_id}.", s.symbol)
+        self._emit("order", f"{s.symbol}: Einstieg Market-Buy {qty} platziert – ID {result.order_id}.", s.symbol)

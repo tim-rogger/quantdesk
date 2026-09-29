@@ -38,6 +38,7 @@ class Settings:
     order_qty: int
     data_file: str
     news_enabled: bool
+    journal_file: str = "journal.jsonl"
 
     @property
     def dry_run(self) -> bool:
@@ -76,4 +77,5 @@ def load_settings() -> Settings:
         order_qty=max(1, int(os.getenv("QUANTDESK_ORDER_QTY", "1"))),
         data_file=os.getenv("QUANTDESK_DATA_FILE", "equities.json"),
         news_enabled=_bool(os.getenv("QUANTDESK_NEWS_ENABLED"), True),
+        journal_file=os.getenv("QUANTDESK_JOURNAL_FILE", "journal.jsonl"),
     )

@@ -61,7 +61,8 @@ class DryRunBroker(Broker):
         self._on_log = on_log
         self._ids = itertools.count(1)
         self._orders: dict[str, Order] = {}
-        self._positions: dict[str, Position] = {}
+        # simulierte Veränderung gegenüber den echten Positionen: Symbol -> (Stückzahl, Ø-Preis der Käufe)
+        self._delta: dict[str, tuple[float, float]] = {}
         self._lock = threading.Lock()
 
     def _log(self, msg: str) -> None:
@@ -77,10 +78,22 @@ class DryRunBroker(Broker):
         self.inner.keepalive()
 
     def get_positions(self) -> list[Position]:
-        real = self.inner.get_positions()
+        real = {p.symbol: p for p in self.inner.get_positions()}
+        out = []
         with self._lock:
-            held = {p.symbol for p in real}
-            return real + [p for s, p in self._positions.items() if s not in held]
+            for sym in set(real) | set(self._delta):
+                dq, davg = self._delta.get(sym, (0.0, 0.0))
+                p = real.get(sym)
+                qty = (p.qty if p else 0.0) + dq
+                if qty <= 0:
+                    continue
+                if p is not None and dq == 0:
+                    out.append(p)
+                    continue
+                avg = p.avg_price if p is not None and dq < 0 else (
+                    ((p.qty * p.avg_price) if p else 0.0) + max(dq, 0) * davg) / qty
+                out.append(Position(sym, qty, avg, None, None, simulated=True))
+        return out
 
     def get_cash(self) -> float | None:
         return self.inner.get_cash()
@@ -105,7 +118,13 @@ class DryRunBroker(Broker):
                 status = "PendingSubmit"
             else:
                 status = "Filled"
-                self._positions[symbol] = Position(symbol, float(qty), float(price), float(price), 0.0, simulated=True)
+                dq, davg = self._delta.get(symbol, (0.0, 0.0))
+                if side.upper() == "BUY":
+                    new_q = dq + qty
+                    davg = ((max(dq, 0) * davg) + qty * price) / new_q if new_q > 0 else price
+                    self._delta[symbol] = (new_q, davg)
+                else:
+                    self._delta[symbol] = (dq - qty, davg)
             self._orders[order_id] = Order(
                 order_id, symbol, side.upper(), float(qty), "MKT", None, status, simulated=True,
                 avg_fill_price=float(price) if price is not None else None,
