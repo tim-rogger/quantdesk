@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import bisect
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from quantdesk.backtest import Costs, GridParams, default_grid, simulate
 from quantdesk.history import Bar
@@ -24,6 +24,8 @@ class Row:
     perf: Perf
     trades: int
     symbols: int
+    values: tuple[float, ...] = field(default=(), repr=False, compare=False)  # Kontowert pro Tag
+    invested: tuple[float, ...] = field(default=(), repr=False, compare=False)  # investierter Wert pro Tag
 
 
 @dataclass(frozen=True)
@@ -100,8 +102,8 @@ def grid_portfolio(data: dict[str, list[Bar]], params: GridParams, costs: Costs,
     if n == 0:
         raise ValueError("Kein Symbol mit genug Daten im Zeitraum.")
     return (
-        Row(f"Grid {params.label()}", perf(acc, inv), trades, n),
-        Row("Kaufen & Halten, alle gleich gewichtet", perf(hold, hold), 2 * n, n),
+        Row(f"Grid {params.label()}", perf(acc, inv), trades, n, tuple(acc), tuple(inv)),
+        Row("Kaufen & Halten, alle gleich gewichtet", perf(hold, hold), 2 * n, n, tuple(hold), tuple(hold)),
     )
 
 
@@ -112,7 +114,7 @@ def hold_single(bars: list[Bar], period: Period, cal: list[str], name: str, capi
     part = bars[i0:i1]
     shares = capital / part[0].open
     values = _align([b.day for b in part], [shares * b.close for b in part], days, capital)
-    return Row(name, perf(values, values), 2, 1)
+    return Row(name, perf(values, values), 2, 1, tuple(values), tuple(values))
 
 
 def momentum_portfolio(
@@ -170,7 +172,10 @@ def momentum_portfolio(
         pos = sum(q * last_close[sym] for sym, q in holdings.items())
         values.append(cash + pos)
         invested.append(pos)
-    return Row(f"Momentum Top {top_n}, {lookback} Tage, monatlich", perf(values, invested), trades, len(data))
+    return Row(
+        f"Momentum Top {top_n}, {lookback} Tage, monatlich", perf(values, invested), trades, len(data),
+        tuple(values), tuple(invested),
+    )
 
 
 GRID_VARIANTS = (
@@ -210,7 +215,100 @@ def study(
         rows += [g for g, _ in grid_rows]
         if tuned_grid is not None:
             g = grid_portfolio(data, tuned_grid, costs, period, cal)[0]
-            rows.append(Row(g.name + " [im Training optimiert]", g.perf, g.trades, g.symbols))
+            rows.append(Row(g.name + " [im Training optimiert]", g.perf, g.trades, g.symbols, g.values, g.invested))
         rows.append(momentum_portfolio(data, period, cal, costs))
         out[f"{period.name} {period.start} – {period.end}"] = rows
     return out
+
+
+def mix_row(
+    assets: dict[str, list[Bar]],
+    weights: dict[str, float],
+    period: Period,
+    cal: list[str],
+    name: str,
+    costs: Costs = Costs(),
+    capital: float = 100_000.0,
+) -> Row:
+    """Feste Mischung (z.B. 60 % SPY / 40 % AGG), am ersten Handelstag jedes Monats zum Open neu gewichtet."""
+    days = _period_days(cal, period)
+    index = {s: {b.day: i for i, b in enumerate(assets[s])} for s in weights}
+    holdings: dict[str, float] = {}
+    last_close: dict[str, float] = {}
+    cash, month, trades = capital, None, 0
+    values, invested = [], []
+    for day in days:
+        if day[:7] != month and all(day in index[s] for s in weights):
+            month = day[:7]
+            opens = {s: assets[s][index[s][day]].open for s in weights}
+            total = cash + sum(q * opens[s] for s, q in holdings.items())
+            n_orders = len(weights)
+            total -= n_orders * costs.fee
+            trades += n_orders
+            holdings = {s: total * w / opens[s] for s, w in weights.items()}
+            cash = total - sum(total * w for w in weights.values())
+        for s in holdings:
+            j = index[s].get(day)
+            if j is not None:
+                last_close[s] = assets[s][j].close
+        pos = sum(q * last_close[s] for s, q in holdings.items())
+        values.append(cash + pos)
+        invested.append(pos)
+    return Row(name, perf(values, invested), trades, len(weights), tuple(values), tuple(invested))
+
+
+def dual_momentum(
+    etfs: dict[str, list[Bar]],
+    risky: tuple[str, ...],
+    safe: str,
+    hurdle: str,
+    period: Period,
+    cal: list[str],
+    name: str,
+    costs: Costs = Costs(),
+    lookback: int = 252,
+    capital: float = 100_000.0,
+) -> Row:
+    """Dual Momentum (Antonacci): am ersten Handelstag jedes Monats den risikoreichen ETF mit der besten
+    Rendite der letzten `lookback` Tage (bis zum Vortag) wählen – relatives Momentum. Liegt diese Rendite
+    nicht über der von `hurdle` (T-Bills, z.B. BIL), stattdessen `safe` (Anleihen, z.B. AGG) halten –
+    absolutes Momentum. Immer 100 % in genau einem ETF, Wechsel zum Eröffnungskurs.
+    """
+    days = _period_days(cal, period)
+    names = set(risky) | {safe, hurdle}
+    index = {s: {b.day: i for i, b in enumerate(etfs[s])} for s in names}
+
+    def momentum(sym: str, day: str) -> float | None:
+        j = index[sym].get(day)
+        if j is None or j - 1 - lookback < 0:
+            return None
+        bars = etfs[sym]
+        return bars[j - 1].close / bars[j - 1 - lookback].close - 1
+
+    holding, shares, cash = None, 0.0, capital
+    month, trades, last_close = None, 0, 0.0
+    values, invested = [], []
+    for day in days:
+        if day[:7] != month:
+            scores = {s: momentum(s, day) for s in risky}
+            hurdle_mom = momentum(hurdle, day)
+            if None not in scores.values() and hurdle_mom is not None and day in index[safe]:
+                month = day[:7]
+                best = max(risky, key=lambda s: scores[s])
+                target = best if scores[best] > hurdle_mom else safe
+                if target != holding:
+                    if holding is not None:
+                        cash += shares * etfs[holding][index[holding][day]].open - costs.fee
+                        trades += 1
+                    price = etfs[target][index[target][day]].open
+                    shares = (cash - costs.fee) / price
+                    cash, holding = 0.0, target
+                    trades += 1
+        if holding is not None:
+            j = index[holding].get(day)
+            if j is not None:
+                last_close = etfs[holding][j].close
+        pos = shares * last_close if holding is not None else 0.0
+        values.append(cash + pos)
+        invested.append(pos)
+    return Row(name, perf(values, invested), trades, len(risky), tuple(values), tuple(invested))

@@ -225,6 +225,17 @@ python research.py
 python research.py --benchmark QQQ --no-sweep
 ```
 
+```bat
+python research.py --walk-forward
+```
+
+`--walk-forward` prüft jede Strategie über mehrere Zeitfenster: 3 Jahre lernen, 1 Jahr testen, dann um 1 Jahr
+verschieben. Cash wird mit dem 3-Monats-T-Bill-Zins verzinst, die Sharpe misst die Überrendite über diesem Zins.
+Ausgewertet wird in USD und CHF, verglichen mit SPY (Massstab), dem Welt-ETF VT und 60/40 SPY/AGG. Dazu kommt
+Kandidat A aus der Roadmap (ETF-Dual-Momentum). Danach wird die **Bestehen-Regel aus der [ROADMAP](ROADMAP.md)** angewendet:
+K1 Sharpe mindestens +0.2 über SPY, K2 Rückgang nicht schlimmer, K3 in mindestens 2/3 der Testjahre besser,
+K4 mehr Rendite als SPY + Cash mit gleichem Investitionsgrad. Dauert rund 1.5 Minuten, mit `--no-sweep` wenige Sekunden.
+
 Verglichen werden:
 - **Kaufen & Halten SPY** (breiter ETF) und **alle Aktien gleich gewichtet halten**
 - **Grid** aus dem Video, mit 200-Tage-Trendfilter, mit Trendfilter und Exit
@@ -270,6 +281,7 @@ quantdesk/
   backtest.py               Grid-Backtest inkl. Trendfilter, Vergleich mit Kaufen und Halten
   metrics.py                Kennzahlen: Rendite p.a., Sharpe, max Drawdown, Ø investiert
   research.py               Portfolio-Vergleich: Grid, Momentum, Kaufen & Halten, ETF; Training/Test
+  walkforward.py            Walk-forward-Test und Bestehen-Regel
 tests/                      pytest (ohne Netzwerk, ohne tkinter)
 ```
 
