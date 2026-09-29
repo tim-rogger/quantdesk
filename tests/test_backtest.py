@@ -3,7 +3,7 @@ import json
 import pytest
 
 import backtest as cli
-from quantdesk.backtest import Costs, GridParams, buy_and_hold, simulate, split, sweep
+from quantdesk.backtest import Costs, GridParams, buy_and_hold, halves, simulate, trend_ok_series
 from quantdesk.history import Bar, load_history, parse_yahoo_history
 from quantdesk.strategy import ValidationError
 
@@ -85,18 +85,56 @@ def test_invalid_params():
         GridParams(3, 0.02, take_profit=0)
 
 
-def test_split_and_sweep_select_on_training_only():
-    # Training: steigt (wenig Nachkaufen ist besser), Test: fällt und erholt sich
-    train = [(100 + i, 101 + i, 100 + i, 101 + i) for i in range(10)]
-    test = [(110, 110, 110, 110), (100, 100, 80, 85), (85, 120, 85, 118)]
-    data = {"X": bars_from(train + test)}
-    a, b = split(data["X"], train_fraction=0.77)
-    assert len(a) == 10 and len(b) == 3
-    grid = [GridParams(1, 0.01), GridParams(1, 0.10, take_profit=0.2), GridParams(5, 0.03)]
-    res = sweep(data, grid, NO_FEE, train_fraction=0.77)
-    assert [p for _, p in res.ranking][0] == res.best
-    assert res.ranking[0][0] >= res.ranking[-1][0]
-    assert res.train[0].bars == 10 and res.test[0].bars == 3
+def test_start_end_window_and_halves():
+    data = bars_from([(100 + i, 101 + i, 100 + i, 100 + i) for i in range(30)])
+    r = simulate(data, GridParams(1, 0.5), NO_FEE, start=10, end=20)
+    assert (r.start, r.end, r.bars) == (data[10].day, data[19].day, 10)
+    assert r.hold_pnl == pytest.approx(2000 * 119 / 110 - 2000)
+    a, b = halves(30, start=10)
+    assert (a.start, a.stop, b.start, b.stop) == (10, 20, 20, 30)
+
+
+def test_account_and_hold_series():
+    bars = bars_from([(100, 100, 100, 100), (100, 100, 100, 110), (110, 110, 110, 120)])
+    r = simulate(bars, GridParams(1, 0.5), NO_FEE)
+    assert r.account == pytest.approx([2000, 2100, 2200])  # 1000 investiert, 1000 Cash
+    assert r.invested == pytest.approx([1000, 1100, 1200])
+    assert r.hold_account == pytest.approx([2000, 2200, 2400])
+    assert r.perf.avg_invested == pytest.approx((0.5 + 1100 / 2100 + 1200 / 2200) / 3)
+    assert r.hold_perf.total_return == pytest.approx(0.2)
+
+
+def test_trend_filter_uses_only_past_closes():
+    closes = [10, 10, 10, 20, 5, 5]
+    bars = bars_from([(c, c, c, c) for c in closes])
+    ok = trend_ok_series(bars, 3)
+    # Tag 4: Vortag (Tag 3) schloss 20 > SMA(10,10,10) -> ok. Tag 5: Vortag 5 < SMA(10,10,20)
+    assert ok == [False, False, False, False, True, False]
+    # Der Kurssprung an Tag 3 selbst beeinflusst die Entscheidung an Tag 3 nicht
+    assert trend_ok_series(bars[:4], 3)[3] is False
+
+
+def test_trend_filter_blocks_entry_and_dip_buying():
+    down = [(100 - i, 100 - i, 100 - i, 100 - i) for i in range(40)]
+    r = simulate(bars_from(down), GridParams(3, 0.02, trend_sma=10), NO_FEE)
+    assert r.buys == 0 and r.pnl == 0  # im Abwärtstrend nie eingestiegen
+    up = [(100 + i, 100 + i, 100 + i, 100 + i) for i in range(15)]
+    crash = [(110, 110, 80, 80)] * 5
+    r = simulate(bars_from(up + crash), GridParams(3, 0.02, trend_sma=10), NO_FEE)
+    assert r.buys == 4  # Einstieg bei Tag 11 und am ersten Crash-Tag noch alle 3 Levels (Vortag war über SMA)
+    r2 = simulate(bars_from(up + [(113, 113, 113, 113)] + crash), GridParams(3, 0.02, trend_sma=10), NO_FEE)
+    assert r2.buys == r.buys  # nach dem Crash-Tag keine weiteren Nachkäufe
+
+
+def test_trend_exit_sells_at_open():
+    up = [(100 + i, 100 + i, 100 + i, 100 + i) for i in range(15)]
+    drop = [(90, 90, 90, 90), (88, 88, 88, 88), (87, 87, 87, 87)]
+    params = GridParams(1, 0.5, trend_sma=10, trend_exit=True)
+    r = simulate(bars_from(up + drop), params, NO_FEE)
+    assert r.sells == 1 and not r.open_position
+    assert r.realized == pytest.approx(1000 / 111 * 88 - 1000)  # Einstieg Tag 11 zu 111, Verkauf Tag 16 zum Open 88
+    with pytest.raises(ValidationError):
+        GridParams(1, 0.5, trend_exit=True)
 
 
 def _yahoo(stamps, o, h, l, c, adj):
@@ -137,12 +175,12 @@ def test_load_history_uses_cache(tmp_path):
 
 
 def test_cli_runs_offline(monkeypatch, capsys):
-    prices = [(100, 101, 97, 99)] * 30 + [(99, 115, 99, 114)] * 30
+    prices = [(100, 101, 97, 99)] * 300 + [(99, 115, 99, 114)] * 300  # > 1 Jahr Vorlauf
     monkeypatch.setattr(cli, "load_history", lambda sym, years: bars_from(prices))
     assert cli.main(["AAPL", "MSFT", "--tp", "10", "--split"]) == 0
     out = capsys.readouterr().out
     assert "Strategie: 5×2%, TP 10%" in out and "Halten" in out and "2. Hälfte" in out
     assert "Keine Anlageberatung" in out
-    assert cli.main(["AAPL", "--sweep"]) == 0
-    assert "TEST (2. Hälfte" in capsys.readouterr().out
+    assert cli.main(["AAPL", "--trend", "20", "--trend-exit"]) == 0
+    assert "Trend SMA20 + Exit" in capsys.readouterr().out
     assert cli.main(["AAPL", "--levels", "10", "--drawdown", "15"]) == 2
