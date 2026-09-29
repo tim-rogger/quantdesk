@@ -74,6 +74,19 @@ def test_entry_price_set_once_and_limit_orders_per_level(data_file):
     assert e.systems["AAPL"].entry_price == 200.0
 
 
+def test_entry_price_is_fill_price_without_commission(data_file):
+    # Live-Test 29.09.2026: Kauf zu 331.21, IBKR-Position meldet 332.21 (inkl. ~1 USD Kommission)
+    b = FakeBroker()
+    e = make_engine(b, data_file)
+    aapl_on(e, levels=1, drawdown=0.02)
+    e.run_once()
+    b.fill("O1", 331.21, commission=1.0)
+    assert b.positions["AAPL"].avg_price == 332.21
+    e.run_once()
+    assert e.systems["AAPL"].entry_price == 331.21
+    assert [o[4] for o in b.placed if o[0] == "LMT"] == [324.59]
+
+
 def test_each_level_placed_exactly_once(data_file):
     b = FakeBroker()
     e = make_engine(b, data_file)

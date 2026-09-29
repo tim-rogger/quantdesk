@@ -230,6 +230,7 @@ class IbkrClient(Broker):
                     limit_price=_to_float(item.get("price")),
                     status=str(item.get("status") or ""),
                     conid=int(conid) if conid else None,
+                    avg_fill_price=_to_float(item.get("avgPrice")),
                 )
             )
         return orders

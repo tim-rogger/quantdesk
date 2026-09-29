@@ -43,7 +43,8 @@ mit vielen Bugfixes (siehe unten).
 
 1. Du schaltest ein System auf **On**. Hat das Konto noch keine Position im Symbol, kauft der Bot **1 Aktie per Market-Order**.
    Hältst du die Aktie schon, wird dein bestehender Durchschnittspreis als Einstiegspreis übernommen.
-2. Sobald der Einstieg gefüllt ist, wird der **Einstiegspreis einmal** gespeichert.
+2. Sobald der Einstieg gefüllt ist, wird der **Einstiegspreis einmal** gespeichert: der Ausführungspreis der Market-Order
+   (ohne Kommission). Bei übernommenen Positionen ist es der IBKR-Durchschnittspreis, der die Kommission enthält.
 3. Darunter legt der Bot **Limit-Buy-Orders (GTC)** – je eine pro Level:
    `Preis Level i = Einstiegspreis × (1 − Drawdown × i)`.
    Beispiel AAPL, Einstieg 200 $, 3 Levels, 2 %: 196.00, 192.00, 188.00.
@@ -196,7 +197,8 @@ Browser-Prüfung – deshalb gibt es als zweiten Fallback die Yahoo-Chart-API. W
 7. Der Chat blockierte die GUI → Claude läuft im Thread, *Send* ist währenddessen gesperrt.
 8. Bei **jedem** Fehler (auch Netzwerk) wurde ein neuer Market-Buy platziert → gekauft wird nur bei sicher „keine Position“,
    ohne gespeicherten Einstieg und ohne offene Einstiegs-Order. Kann das Konto nicht gelesen werden, wird die Runde übersprungen.
-9. Einstiegspreis = Maximum der letzten 50 Orders → Einstiegspreis wird **einmal** aus dem `avgPrice` der Position gesetzt.
+9. Einstiegspreis = Maximum der letzten 50 Orders → Einstiegspreis wird **einmal** gesetzt: Ausführungspreis der
+   Einstiegs-Order (ohne Kommission), bei bereits gehaltenen Aktien der `avgPrice` der Position.
 10. Order-Abgleich über exakte Float-Preise → Abgleich über gespeicherte Order-ID und Preis ±0.01.
 11. Hart codierte API-Keys → alles aus `.env`.
 12. Veraltetes `openai.ChatCompletion` → Anthropic Python SDK.

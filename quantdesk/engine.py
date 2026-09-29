@@ -350,8 +350,13 @@ class Engine:
             self._emit("warn", f"{s.symbol}: Short-Position vorhanden – Grid wird nicht gehandelt.", s.symbol, key=f"short:{s.symbol}")
             return
         if pos is not None and pos.qty > 0:
-            # Einstiegspreis EINMAL setzen = avgPrice der Position
-            s.entry_price = round(pos.avg_price, 2)
+            # Einstiegspreis EINMAL setzen: Ausführungspreis der eigenen Einstiegs-Order, sonst avgPrice
+            # der Position (bei IBKR inkl. Kommission, z.B. 332.21 statt 331.21)
+            entry_order = next((o for o in orders if o.order_id == s.entry_order_id), None) if s.entry_order_id else None
+            if entry_order is not None and entry_order.is_filled and entry_order.avg_fill_price:
+                s.entry_price = round(entry_order.avg_fill_price, 2)
+            else:
+                s.entry_price = round(pos.avg_price, 2)
             s.simulated = s.simulated or pos.simulated
             how = "Einstieg gefüllt" if s.entry_order_id else "bestehende Position übernommen"
             s.entry_order_id = None

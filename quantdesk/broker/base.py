@@ -52,6 +52,7 @@ class Order:
     status: str
     conid: int | None = None
     simulated: bool = False
+    avg_fill_price: float | None = None  # Ausführungspreis ohne Kommission (nur bei Fills)
 
     @property
     def is_open(self) -> bool:
@@ -74,6 +75,7 @@ class Order:
             "type": self.order_type,
             "limit_price": self.limit_price,
             "status": self.status,
+            "avg_fill_price": self.avg_fill_price,
             "simulated": self.simulated,
         }
 

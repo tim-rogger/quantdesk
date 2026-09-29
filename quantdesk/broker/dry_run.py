@@ -106,7 +106,10 @@ class DryRunBroker(Broker):
             else:
                 status = "Filled"
                 self._positions[symbol] = Position(symbol, float(qty), float(price), float(price), 0.0, simulated=True)
-            self._orders[order_id] = Order(order_id, symbol, side.upper(), float(qty), "MKT", None, status, simulated=True)
+            self._orders[order_id] = Order(
+                order_id, symbol, side.upper(), float(qty), "MKT", None, status, simulated=True,
+                avg_fill_price=float(price) if price is not None else None,
+            )
         where = f"@ ~{price:.2f} (simuliert gefüllt)" if price is not None else "(kein Preis – bleibt offen)"
         self._log(f"DRY_RUN: MKT {side.upper()} {qty} {symbol} {where} – NICHT gesendet")
         return OrderResult(order_id, status, ["DRY_RUN"])

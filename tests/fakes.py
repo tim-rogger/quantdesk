@@ -64,13 +64,16 @@ class FakeBroker(Broker):
         self.orders[order_id] = Order(o.order_id, o.symbol, o.side, o.qty, o.order_type, o.limit_price, "Cancelled")
 
     # Test-Helfer
-    def fill(self, order_id: str, price: float) -> None:
+    def fill(self, order_id: str, price: float, commission: float = 0.0) -> None:
+        """Wie IBKR: Order kennt den Ausführungspreis, die Position rechnet die Kommission ein."""
         o = self.orders[order_id]
-        self.orders[order_id] = Order(o.order_id, o.symbol, o.side, o.qty, o.order_type, o.limit_price, "Filled")
+        self.orders[order_id] = Order(
+            o.order_id, o.symbol, o.side, o.qty, o.order_type, o.limit_price, "Filled", avg_fill_price=price
+        )
         old = self.positions.get(o.symbol)
         qty = (old.qty if old else 0) + o.qty
-        avg = ((old.qty * old.avg_price) if old else 0) + o.qty * price
-        self.positions[o.symbol] = Position(o.symbol, qty, avg / qty)
+        cost = ((old.qty * old.avg_price) if old else 0) + o.qty * price + commission
+        self.positions[o.symbol] = Position(o.symbol, qty, cost / qty)
 
     def orders_of_type(self, order_type: str) -> list[Order]:
         return [o for o in self.orders.values() if o.order_type == order_type]

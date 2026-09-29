@@ -152,7 +152,7 @@ def test_positions_cash_and_orders_parsing():
                 {"acct": ACCT, "orderId": 11, "ticker": "AAPL", "conid": 265598, "side": "SELL", "totalSize": 1.0,
                  "price": "210.5", "status": "Submitted", "orderType": "Limit"},
                 {"acct": ACCT, "orderId": 12, "ticker": "AAPL", "side": "BUY", "totalSize": 1.0,
-                 "status": "Filled", "orderType": "Market"},
+                 "status": "Filled", "orderType": "Market", "price": "", "avgPrice": "331.21"},
                 {"acct": "DU0000001", "orderId": 13, "ticker": "X", "side": "BUY", "status": "Submitted"},
             ]}),
         ],
@@ -165,6 +165,7 @@ def test_positions_cash_and_orders_parsing():
         ("11", "SELL", "LMT", 210.5, True),
         ("12", "BUY", "MKT", None, False),
     ]
+    assert [o.avg_fill_price for o in orders] == [None, 331.21]
     assert [o.order_id for o in c.get_open_orders()] == ["11"]
 
 
