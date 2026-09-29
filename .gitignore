@@ -1,5 +1,21 @@
-target/
+# Secrets & runtime state
+.env
+equities.json
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# IDE / logs
 .idea/
+.vscode/
 *.iml
 *.log
-lib/
+
+# Übergabe-Paket (nie committen)
+quantdesk-umbau/
+*.corrupt.json
