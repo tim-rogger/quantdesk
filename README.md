@@ -255,7 +255,36 @@ sind beim optimierten Grid geschönt (Overfitting).
 - Ausführung: Einstieg zum Eröffnungskurs, Limit-Buys zum Level-Preis oder tieferen Open. Take-Profit nie am Einstiegs-
   oder Nachkauf-Tag, Stop-Loss hat Vorrang. Die Kursdaten werden pro Tag in `.cache/` zwischengespeichert.
 
-> Der Bot selbst verkauft (noch) nie. Take-Profit, Stop-Loss, Trendfilter und Momentum gibt es bisher nur im Backtest.
+> Im Bot gibt es davon nur den **Trendfilter mit Exit** (Kandidat C, siehe unten). Take-Profit, Stop-Loss und
+> Momentum gibt es nur im Backtest.
+
+## Vorwärtstest von Kandidat C (Paper-Konto)
+
+Die Forschung ist abgeschlossen (Fazit in der [ROADMAP](ROADMAP.md)): Nichts hat SPY nach fairen Regeln geschlagen.
+Kandidat C (Grid 5 × 2 %, nur über dem 200-Tage-Schnitt, darunter alles verkaufen) wird jetzt 6 Monate lang auf dem
+Paper-Konto getestet. Die Kriterien F1–F5 wurden **vor** dem Start in der ROADMAP festgelegt.
+
+```bat
+python forward_test.py setup
+```
+legt für die 49 Aktien aus `data/universe.csv` je ein C-System an (Status *Off*, 1'000 $ pro Order). Danach im Bot
+alle C-Zeilen markieren (Shift-Klick) und **Toggle** drücken. In der Spalte *Status* steht dann „On · SMA200 + Exit“.
+
+Was der Bot bei C anders macht:
+- **Einstieg und Nachkäufe** nur, wenn der Vortag über dem 200-Tage-Durchschnitt schloss (Kurse von Yahoo, einmal pro Tag).
+- **Trendbruch:** offene Orders stornieren, die ganze Position per Market-Order verkaufen, danach auf einen neuen Aufwärtstrend warten.
+- **Ordergrösse in Dollar:** 1'000 $ ÷ Preis, gerundet auf ganze Aktien.
+- **Handelsjournal:** Jeder ausgeführte Kauf und Verkauf landet in `journal.jsonl`.
+
+```bat
+python forward_test.py report
+```
+zeigt jeden Monat: C live gegen den Backtest desselben Zeitraums, gegen SPY und gegen SPY + Cash mit gleichem
+Investitionsgrad, in USD und CHF, mit dem Stand der Kriterien F1–F5. Mit `--include-dry` zählen auch simulierte
+DRY_RUN-Fills, zum Ausprobieren.
+
+> **Auf `PAPER` erst umstellen, wenn der Start bewusst bestätigt ist.** Hält das Paper-Konto schon Aktien aus der
+> Liste, übernimmt C diese Position. Vorher verkaufen, wenn der Test sauber sein soll.
 
 ## Aufbau des Codes
 
@@ -263,6 +292,7 @@ sind beim optimierten Grid geschönt (Overfitting).
 bot.py                      Tkinter-GUI (Einstiegspunkt)
 backtest.py                 Backtest einzelner Aktien (Kommandozeile)
 research.py                 Strategie-Vergleich auf ~50 Aktien (Kommandozeile)
+forward_test.py             Vorwärtstest von C: Einrichtung und Monatsreport
 data/universe.csv           Aktien für research.py
 start.bat                   Doppelklick-Start
 quantdesk/
@@ -282,6 +312,9 @@ quantdesk/
   metrics.py                Kennzahlen: Rendite p.a., Sharpe, max Drawdown, Ø investiert
   research.py               Portfolio-Vergleich: Grid, Momentum, Kaufen & Halten, ETF; Training/Test
   walkforward.py            Walk-forward-Test und Bestehen-Regel
+  trend.py                  Trendfilter im Live-Betrieb (dieselbe Regel wie im Backtest)
+  journal.py                Handelsjournal (journal.jsonl)
+  forward.py                Vorwärtstest: C-Systeme anlegen, Report, Kriterien F1–F5
 tests/                      pytest (ohne Netzwerk, ohne tkinter)
 ```
 

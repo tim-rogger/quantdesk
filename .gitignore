@@ -1,6 +1,7 @@
 # Secrets & runtime state
 .env
 equities.json
+journal.jsonl
 
 # Python
 __pycache__/
