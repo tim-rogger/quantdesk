@@ -230,8 +230,11 @@ python research.py --walk-forward
 ```
 
 `--walk-forward` prüft jede Strategie über mehrere Zeitfenster: 3 Jahre lernen, 1 Jahr testen, dann um 1 Jahr
-verschieben. Danach wendet es die **Bestehen-Regel aus der [ROADMAP](ROADMAP.md)** an (K1 Sharpe höher als SPY,
-K2 Rückgang nicht schlimmer, K3 in mindestens 2/3 der Testjahre besser). Läuft rund 1.5 Minuten, mit `--no-sweep` schneller.
+verschieben. Cash wird mit dem 3-Monats-T-Bill-Zins verzinst, die Sharpe misst die Überrendite über diesem Zins.
+Ausgewertet wird in USD und CHF, verglichen mit SPY (Massstab), dem Welt-ETF VT und 60/40 SPY/AGG. Dazu kommt
+Kandidat A aus der Roadmap (ETF-Dual-Momentum). Danach wird die **Bestehen-Regel aus der [ROADMAP](ROADMAP.md)** angewendet:
+K1 Sharpe mindestens +0.2 über SPY, K2 Rückgang nicht schlimmer, K3 in mindestens 2/3 der Testjahre besser,
+K4 mehr Rendite als SPY + Cash mit gleichem Investitionsgrad. Dauert rund 1.5 Minuten, mit `--no-sweep` wenige Sekunden.
 
 Verglichen werden:
 - **Kaufen & Halten SPY** (breiter ETF) und **alle Aktien gleich gewichtet halten**
