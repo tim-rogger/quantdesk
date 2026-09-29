@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import bisect
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from quantdesk.backtest import Costs, GridParams, default_grid, simulate
 from quantdesk.history import Bar
@@ -24,6 +24,8 @@ class Row:
     perf: Perf
     trades: int
     symbols: int
+    values: tuple[float, ...] = field(default=(), repr=False, compare=False)  # Kontowert pro Tag
+    invested: tuple[float, ...] = field(default=(), repr=False, compare=False)  # investierter Wert pro Tag
 
 
 @dataclass(frozen=True)
@@ -100,8 +102,8 @@ def grid_portfolio(data: dict[str, list[Bar]], params: GridParams, costs: Costs,
     if n == 0:
         raise ValueError("Kein Symbol mit genug Daten im Zeitraum.")
     return (
-        Row(f"Grid {params.label()}", perf(acc, inv), trades, n),
-        Row("Kaufen & Halten, alle gleich gewichtet", perf(hold, hold), 2 * n, n),
+        Row(f"Grid {params.label()}", perf(acc, inv), trades, n, tuple(acc), tuple(inv)),
+        Row("Kaufen & Halten, alle gleich gewichtet", perf(hold, hold), 2 * n, n, tuple(hold), tuple(hold)),
     )
 
 
@@ -112,7 +114,7 @@ def hold_single(bars: list[Bar], period: Period, cal: list[str], name: str, capi
     part = bars[i0:i1]
     shares = capital / part[0].open
     values = _align([b.day for b in part], [shares * b.close for b in part], days, capital)
-    return Row(name, perf(values, values), 2, 1)
+    return Row(name, perf(values, values), 2, 1, tuple(values), tuple(values))
 
 
 def momentum_portfolio(
@@ -170,7 +172,10 @@ def momentum_portfolio(
         pos = sum(q * last_close[sym] for sym, q in holdings.items())
         values.append(cash + pos)
         invested.append(pos)
-    return Row(f"Momentum Top {top_n}, {lookback} Tage, monatlich", perf(values, invested), trades, len(data))
+    return Row(
+        f"Momentum Top {top_n}, {lookback} Tage, monatlich", perf(values, invested), trades, len(data),
+        tuple(values), tuple(invested),
+    )
 
 
 GRID_VARIANTS = (
@@ -210,7 +215,7 @@ def study(
         rows += [g for g, _ in grid_rows]
         if tuned_grid is not None:
             g = grid_portfolio(data, tuned_grid, costs, period, cal)[0]
-            rows.append(Row(g.name + " [im Training optimiert]", g.perf, g.trades, g.symbols))
+            rows.append(Row(g.name + " [im Training optimiert]", g.perf, g.trades, g.symbols, g.values, g.invested))
         rows.append(momentum_portfolio(data, period, cal, costs))
         out[f"{period.name} {period.start} – {period.end}"] = rows
     return out

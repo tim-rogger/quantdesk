@@ -5,6 +5,7 @@ Beispiele:
     python research.py                         # Universum aus data/universe.csv, ETF SPY, 10 Jahre
     python research.py --benchmark QQQ --years 8
     python research.py --no-sweep              # ohne Parameter-Suche (schneller)
+    python research.py --walk-forward          # 3 Jahre lernen / 1 Jahr testen + Bestehen-Regel (ROADMAP.md)
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import requests
 from quantdesk.backtest import Costs
 from quantdesk.history import load_history
 from quantdesk.research import WARMUP, Row, best_grid_on, calendar, load_universe, periods, study
+from quantdesk.walkforward import WINDOW_SHARE, default_strategies, walk_forward
 
 DISCLAIMER = "Backtests zeigen die Vergangenheit, nicht die Zukunft. Keine Anlageberatung."
 
@@ -32,6 +34,45 @@ def print_rows(title: str, rows: list[Row]) -> None:
               f"{p.return_on_invested:>18.1%}{r.trades:>8}")
 
 
+def _mark(ok: bool) -> str:
+    return "✓" if ok else "✗"
+
+
+def print_walk_forward(wins, bench, results) -> None:
+    labels = [f"{w.test.start[2:4]}/{w.test.end[2:4]}" for w in wins]
+    print(f"\nWALK-FORWARD: 3 Jahre Training → 1 Jahr Test, {len(wins)} Testfenster "
+          f"({wins[0].test.start} – {wins[-1].test.end})")
+
+    print("\nSharpe je Testjahr")
+    header = f"{'Strategie':50}" + "".join(f"{lab:>8}" for lab in labels)
+    print(header)
+    print("-" * len(header))
+    for res in [bench] + [r for r, _ in results]:
+        print(f"{res.name[:49]:50}" + "".join(f"{row.perf.sharpe:>8.2f}" for row in res.windows))
+
+    print("\nAlle Testjahre zusammengehängt + Bestehen-Regel (K1 Sharpe > ETF, K2 max DD nicht schlimmer, "
+          f"K3 in ≥ {WINDOW_SHARE:.0%} der Jahre besser)")
+    header = (f"{'Strategie':50}{'Rendite p.a.':>13}{'Sharpe':>8}{'max DD':>9}{'Ø inv.':>8}"
+              f"{'Jahre besser':>14}{'K1':>4}{'K2':>4}{'K3':>4}  Ergebnis")
+    print(header)
+    print("-" * len(header))
+    p = bench.stitched
+    print(f"{bench.name[:49]:50}{p.cagr:>13.1%}{p.sharpe:>8.2f}{p.max_drawdown:>9.1%}{p.avg_invested:>8.0%}"
+          f"{'–':>14}{'':>12}  Massstab")
+    for res, v in results:
+        p = res.stitched
+        print(f"{res.name[:49]:50}{p.cagr:>13.1%}{p.sharpe:>8.2f}{p.max_drawdown:>9.1%}{p.avg_invested:>8.0%}"
+              f"{f'{v.windows_better}/{v.windows_total}':>14}{_mark(v.k1):>4}{_mark(v.k2):>4}{_mark(v.k3):>4}  "
+              f"{'BESTANDEN' if v.passed else 'durchgefallen'}")
+    for res, _ in results:
+        if any(res.notes):
+            print(f"\n{res.name} – gewählte Parameter pro Trainingsfenster:")
+            for lab, note in zip(labels, res.notes):
+                print(f"  Test {lab}: {note}")
+    passed = [res.name for res, v in results if v.passed]
+    print("\n→ " + (f"Bestanden: {', '.join(passed)}" if passed else "Keine Strategie hat die Bestehen-Regel erfüllt."))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--universe", default="data/universe.csv", help="CSV mit Spalte 'symbol'")
@@ -40,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--order-usd", type=float, default=1000.0, help="Grid: Betrag pro Order in $")
     ap.add_argument("--fee", type=float, default=1.0, help="Kommission pro Order in $")
     ap.add_argument("--no-sweep", action="store_true", help="keine Grid-Parameter-Suche im Training")
+    ap.add_argument("--walk-forward", action="store_true", help="Walk-forward-Test mit Bestehen-Regel (ROADMAP.md)")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
 
     costs = Costs(args.order_usd, args.fee)
@@ -61,6 +103,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Ohne Kursdaten (übersprungen): {', '.join(missing)}")
     short = [s for s, bars in data.items() if len(bars) < WARMUP + 20]
     print(f"{len(data)} Aktien geladen" + (f", davon mit kurzer Historie (steigen später ein): {', '.join(short)}" if short else ""))
+
+    if args.walk_forward:
+        def progress(n, total):
+            print(f"\rGrid-Parameter im Trainingsfenster: {n}/{total}", end="", file=sys.stderr, flush=True)
+        strategies = default_strategies(tune=not args.no_sweep, progress=progress)
+        wins, bench, results = walk_forward(data, benchmark, args.benchmark.upper(), costs, strategies)
+        print(file=sys.stderr)
+        print_walk_forward(wins, bench, results)
+        print(f"\n{DISCLAIMER}")
+        return 0
 
     tuned = None
     if not args.no_sweep:

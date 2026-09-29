@@ -225,6 +225,14 @@ python research.py
 python research.py --benchmark QQQ --no-sweep
 ```
 
+```bat
+python research.py --walk-forward
+```
+
+`--walk-forward` prüft jede Strategie über mehrere Zeitfenster: 3 Jahre lernen, 1 Jahr testen, dann um 1 Jahr
+verschieben. Danach wendet es die **Bestehen-Regel aus der [ROADMAP](ROADMAP.md)** an (K1 Sharpe höher als SPY,
+K2 Rückgang nicht schlimmer, K3 in mindestens 2/3 der Testjahre besser). Läuft rund 1.5 Minuten, mit `--no-sweep` schneller.
+
 Verglichen werden:
 - **Kaufen & Halten SPY** (breiter ETF) und **alle Aktien gleich gewichtet halten**
 - **Grid** aus dem Video, mit 200-Tage-Trendfilter, mit Trendfilter und Exit
@@ -270,6 +278,7 @@ quantdesk/
   backtest.py               Grid-Backtest inkl. Trendfilter, Vergleich mit Kaufen und Halten
   metrics.py                Kennzahlen: Rendite p.a., Sharpe, max Drawdown, Ø investiert
   research.py               Portfolio-Vergleich: Grid, Momentum, Kaufen & Halten, ETF; Training/Test
+  walkforward.py            Walk-forward-Test und Bestehen-Regel
 tests/                      pytest (ohne Netzwerk, ohne tkinter)
 ```
 
