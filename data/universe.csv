@@ -1,0 +1,53 @@
+# ~50 US-Aktien fuer research.py: jede 3. aus der alten QuantDesk-Liste (Grosskonzerne von heute)
+# + 15 in den letzten Jahren schwache Titel. Achtung: Survivorship-Bias - alles Firmen, die es heute noch gibt.
+symbol,name,group
+AAPL,Apple,largecap
+GOOGL,Alphabet,largecap
+TSLA,Tesla,largecap
+LLY,Eli Lilly,largecap
+MA,Mastercard,largecap
+JNJ,Johnson & Johnson,largecap
+COST,Costco,largecap
+ORCL,Oracle,largecap
+KO,Coca-Cola,largecap
+TMO,Thermo Fisher Scientific,largecap
+ACN,Accenture,largecap
+LIN,Linde,largecap
+TXN,Texas Instruments,largecap
+AMD,Advanced Micro Devices,largecap
+INTC,Intel,largecap
+COP,ConocoPhillips,largecap
+HON,Honeywell International,largecap
+T,AT&T,largecap
+INTU,Intuit,largecap
+GE,GE Aerospace,largecap
+GS,Goldman Sachs,largecap
+DE,Deere,largecap
+BKNG,Booking Holdings,largecap
+GILD,Gilead Sciences,largecap
+SYK,Stryker,largecap
+C,Citigroup,largecap
+PFE,Pfizer,largecap
+ETN,Eaton,largecap
+PGR,Progressive,largecap
+ELV,Elevance Health,largecap
+REGN,Regeneron Pharmaceuticals,largecap
+ADP,Automatic Data Processing,largecap
+LRCX,Lam Research,largecap
+CDNS,Cadence Design Systems,largecap
+NFLX,Netflix,largecap
+WBA,Walgreens Boots Alliance,schwach
+PARA,Paramount Global,schwach
+M,Macy's,schwach
+KSS,Kohl's,schwach
+F,Ford,schwach
+VFC,VF Corp,schwach
+MMM,3M,schwach
+CVS,CVS Health,schwach
+WBD,Warner Bros. Discovery,schwach
+AAL,American Airlines,schwach
+CCL,Carnival,schwach
+PYPL,PayPal,schwach
+ZM,Zoom,schwach
+PTON,Peloton,schwach
+SNAP,Snap,schwach

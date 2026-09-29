@@ -1,10 +1,12 @@
-"""Backtester für die Grid/DCA-Strategie – vergleicht immer mit Kaufen und Halten.
+"""Backtester für die Grid/DCA-Strategie auf einzelnen Aktien – immer im Vergleich mit Kaufen und Halten.
 
 Beispiele:
     python backtest.py AAPL                                  # Video-Strategie: 5 Levels à 2 %, nie verkaufen
-    python backtest.py AAPL MSFT NKE --levels 5 --drawdown 5 --tp 10
+    python backtest.py AAPL MSFT NKE --drawdown 5 --tp 10
+    python backtest.py AAPL NKE --trend 200 --trend-exit     # nur über dem 200-Tage-Schnitt handeln
     python backtest.py AAPL MSFT --tp 10 --sl 10 --split     # erste und zweite Hälfte getrennt
-    python backtest.py SPY AAPL MSFT NKE INTC --sweep        # Parameter suchen (Training) und ehrlich prüfen (Test)
+
+Für den Vergleich mehrerer Strategien auf ~50 Aktien (inkl. Parameter-Suche): python research.py
 """
 from __future__ import annotations
 
@@ -13,35 +15,29 @@ import sys
 
 import requests
 
-from quantdesk.backtest import Costs, GridParams, Result, simulate, split, sweep
+from quantdesk.backtest import Costs, GridParams, Result, halves, simulate, summarize
 from quantdesk.history import load_history
+from quantdesk.research import WARMUP
 from quantdesk.strategy import MAX_LEVELS, ValidationError
 
 DISCLAIMER = "Backtests zeigen die Vergangenheit, nicht die Zukunft. Keine Anlageberatung."
 
 
-def _money(x: float) -> str:
-    return f"{x:,.0f}".replace(",", "'")
-
-
 def print_table(title: str, results: list[Result]) -> None:
     print(f"\n{title}")
-    header = (f"{'Symbol':7}{'Zeitraum':24}{'Strategie $':>12}{'p.a.':>7}{'Halten $':>12}{'p.a.':>7}"
-              f"{'Differenz':>11}{'max Kapital':>12}{'max DD $':>10}{'Zyklen':>7}{'Käufe':>6}{'offen':>6}")
+    header = (f"{'Symbol':7}{'Zeitraum':24}{'p.a. Grid':>10}{'p.a. Halten':>12}{'Sharpe G/H':>12}"
+              f"{'max DD Grid':>12}{'max DD Halten':>14}{'Ø invest.':>10}{'p.a. / Ø inv.':>14}{'Zyklen':>7}")
     print(header)
     print("-" * len(header))
     for r in results:
-        print(f"{r.symbol:7}{r.start + ' – ' + r.end:24}{_money(r.pnl):>12}{r.cagr:>7.1%}{_money(r.hold_pnl):>12}"
-              f"{r.hold_cagr:>7.1%}{_money(r.excess):>11}{_money(r.max_capital):>12}{_money(r.max_drawdown):>10}"
-              f"{r.cycles:>7}{r.buys:>6}{'ja' if r.open_position else 'nein':>6}")
-    if len(results) > 1:
-        print("-" * len(header))
-        print(f"{'Summe':31}{_money(sum(r.pnl for r in results)):>12}{'':>7}{_money(sum(r.hold_pnl for r in results)):>12}"
-              f"{'':>7}{_money(sum(r.excess for r in results)):>11}")
-    wins = sum(r.excess > 0 for r in results)
-    losers = sum(r.pnl < 0 for r in results)
-    print(f"→ Strategie schlägt Kaufen und Halten bei {wins} von {len(results)} Symbol(en); "
-          f"{losers} Symbol(e) mit Verlust.")
+        g, h = r.perf, r.hold_perf
+        print(f"{r.symbol:7}{r.start + ' – ' + r.end:24}{g.cagr:>10.1%}{h.cagr:>12.1%}"
+              f"{f'{g.sharpe:.2f} / {h.sharpe:.2f}':>12}{g.max_drawdown:>12.1%}{h.max_drawdown:>14.1%}"
+              f"{g.avg_invested:>10.0%}{g.return_on_invested:>14.1%}{r.cycles:>7}")
+    s = summarize(results)
+    sharpe_wins = sum(r.perf.sharpe > r.hold_perf.sharpe for r in results)
+    print(f"→ Mehr Gewinn als Halten: {s.wins} von {s.n} · bessere Sharpe als Halten: {sharpe_wins} von {s.n} · "
+          f"mit Verlust: {s.losers}")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -51,12 +47,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--drawdown", type=float, default=2.0, help="Abstand pro Level in %% (Standard 2)")
     p.add_argument("--tp", type=float, default=None, help="Take-Profit in %% über Ø-Einstand (Standard: nie verkaufen)")
     p.add_argument("--sl", type=float, default=None, help="Stop-Loss in %% unter dem letzten Level")
+    p.add_argument("--trend", type=int, default=None, help="Trendfilter: nur über dem N-Tage-Schnitt kaufen (z.B. 200)")
+    p.add_argument("--trend-exit", action="store_true", help="mit --trend: alles verkaufen, wenn der Kurs darunter fällt")
     p.add_argument("--no-restart", action="store_true", help="nach einem Verkauf nicht neu einsteigen")
-    p.add_argument("--years", type=int, default=10, help="Jahre Historie (Standard 10)")
+    p.add_argument("--years", type=int, default=10, help="Jahre Backtest (plus 1 Jahr Vorlauf, Standard 10)")
     p.add_argument("--order-usd", type=float, default=1000.0, help="Betrag pro Order in $ (Standard 1000)")
     p.add_argument("--fee", type=float, default=1.0, help="Kommission pro Order in $ (Standard 1)")
     p.add_argument("--split", action="store_true", help="zusätzlich erste und zweite Hälfte getrennt zeigen")
-    p.add_argument("--sweep", action="store_true", help="Parameter auf 1. Hälfte optimieren, auf 2. Hälfte testen")
     return p.parse_args(argv)
 
 
@@ -70,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
             args.tp / 100 if args.tp else None,
             args.sl / 100 if args.sl else None,
             restart=not args.no_restart,
+            trend_sma=args.trend,
+            trend_exit=args.trend_exit,
         )
     except ValidationError as e:
         print(f"Ungültige Parameter: {e}", file=sys.stderr)
@@ -78,32 +77,27 @@ def main(argv: list[str] | None = None) -> int:
     data = {}
     for sym in args.symbols:
         try:
-            data[sym.upper()] = load_history(sym, args.years)
+            bars = load_history(sym, args.years + 1)
         except (requests.RequestException, ValueError) as e:
             print(f"{sym.upper()}: keine Kursdaten ({e}) – übersprungen", file=sys.stderr)
+            continue
+        start = max(WARMUP, len(bars) - args.years * 252)
+        if len(bars) - start < 20:
+            print(f"{sym.upper()}: zu kurze Historie – übersprungen", file=sys.stderr)
+            continue
+        data[sym.upper()] = (bars, start)
     if not data:
         return 1
 
     budget = (params.levels + 1) * costs.order_usd
-    print(f"Budget pro Symbol: {_money(budget)} $ ({params.levels + 1} Orders à {_money(costs.order_usd)} $), "
-          f"Kommission {costs.fee:g} $ pro Order.")
-
-    if args.sweep:
-        result = sweep(data, costs=costs)
-        print(f"\nSweep: {len(result.ranking)} Parameter-Kombinationen auf der 1. Hälfte getestet.")
-        print("Top 5 im Training (Summe Differenz zu Halten):")
-        for excess, p in result.ranking[:5]:
-            print(f"  {p.label():32} {_money(excess):>10} $")
-        print_table(f"TRAINING (1. Hälfte) – beste Parameter: {result.best.label()}", result.train)
-        print_table(f"TEST (2. Hälfte, nie gesehen) – dieselben Parameter: {result.best.label()}", result.test)
-        print("\nEntscheidend ist die TEST-Tabelle. Sieht das Training viel besser aus als der Test, "
-              "wurden die Parameter an die Vergangenheit angepasst (Overfitting).")
-    else:
-        print_table(f"Strategie: {params.label()}", [simulate(bars, params, costs, sym) for sym, bars in data.items()])
-        if args.split:
-            halves = {sym: split(bars) for sym, bars in data.items()}
-            print_table("1. Hälfte", [simulate(a, params, costs, sym) for sym, (a, _) in halves.items()])
-            print_table("2. Hälfte", [simulate(b, params, costs, sym) for sym, (_, b) in halves.items()])
+    print(f"Budget pro Symbol: {budget:,.0f} $ ({params.levels + 1} Orders à {costs.order_usd:,.0f} $), "
+          f"Kommission {costs.fee:g} $ pro Order. Das erste Jahr dient als Vorlauf.".replace(",", "'"))
+    print_table(f"Strategie: {params.label()}", [simulate(b, params, costs, sym, start) for sym, (b, start) in data.items()])
+    if args.split:
+        parts = {sym: halves(len(b), start) for sym, (b, start) in data.items()}
+        for n, label in ((0, "1. Hälfte"), (1, "2. Hälfte")):
+            print_table(label, [simulate(data[sym][0], params, costs, sym, rng[n].start, rng[n].stop)
+                                for sym, rng in parts.items()])
     print(f"\n{DISCLAIMER}")
     return 0
 

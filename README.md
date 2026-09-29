@@ -164,9 +164,28 @@ geschrieben; ist sie kaputt, wird sie als `*.corrupt.json` gesichert und der Bot
 
 ## Backtest: Funktioniert die Strategie?
 
-Bevor du Parameter im Bot änderst, prüf sie mit dem Backtester auf historischen Tageskursen
-(Yahoo, split- und dividendenbereinigt, bis 10 Jahre). Er vergleicht **immer mit Kaufen und Halten**
-desselben Budgets. Denn eine Strategie, die nur dann Geld verdient, wenn die Aktie ohnehin steigt, hat keinen eigenen Vorteil.
+Bevor du Parameter im Bot änderst, prüf sie auf historischen Tageskursen (Yahoo, split- und dividendenbereinigt).
+Es gibt zwei Werkzeuge, beide vergleichen **immer mit Kaufen und Halten**:
+
+| Werkzeug | Wofür |
+|---|---|
+| `backtest.py` | Grid auf einzelnen Aktien, schnell Ideen ausprobieren |
+| `research.py` | Vergleich mehrerer Strategien auf ~50 Aktien (`data/universe.csv`) und einem ETF, getrennt nach Training und Test |
+
+### Kennzahlen (in beiden Tools gleich)
+
+| Kennzahl | Bedeutung |
+|---|---|
+| Rendite p.a. | Jahresrendite aufs ganze Budget, inklusive nicht investiertem Cash |
+| Sharpe | Rendite pro Einheit Schwankung (risikoloser Zins = 0). Höher ist besser, **die wichtigste Zahl** |
+| max DD | grösster Rückgang vom Höchststand in % |
+| Ø investiert | wie viel des Budgets im Schnitt investiert war |
+| p.a. / Ø inv. | Rendite p.a. geteilt durch Ø investiert, also ungefähr die Rendite, wenn die Strategie immer voll investiert wäre |
+
+Warum nicht einfach den Gewinn in Dollar vergleichen? Das Grid hat oft nur einen Teil des Budgets investiert und
+„verliert“ deshalb fast automatisch gegen Kaufen und Halten. Sharpe und max DD vergleichen fair.
+
+### `backtest.py`: einzelne Aktien
 
 ```bat
 .venv\Scripts\activate
@@ -174,14 +193,14 @@ desselben Budgets. Denn eine Strategie, die nur dann Geld verdient, wenn die Akt
 REM Video-Strategie: 5 Levels à 2 %, nie verkaufen
 python backtest.py AAPL
 
-REM andere Parameter, mit Take-Profit
+REM mit Take-Profit
 python backtest.py AAPL MSFT NKE --drawdown 5 --tp 10
+
+REM Trendfilter: nur über dem 200-Tage-Schnitt kaufen, darunter alles verkaufen
+python backtest.py AAPL NKE --trend 200 --trend-exit
 
 REM zusätzlich 1. und 2. Hälfte getrennt
 python backtest.py AAPL MSFT --tp 10 --sl 10 --split
-
-REM Parameter suchen (1. Hälfte) und ehrlich prüfen (2. Hälfte)
-python backtest.py SPY AAPL MSFT NKE INTC --sweep
 ```
 
 | Option | Bedeutung |
@@ -189,30 +208,51 @@ python backtest.py SPY AAPL MSFT NKE INTC --sweep
 | `--levels`, `--drawdown` | Grid wie im Bot (Drawdown in %) |
 | `--tp` | Take-Profit: alles verkaufen, wenn der Kurs X % über dem Ø-Einstand liegt, danach neuer Zyklus |
 | `--sl` | Stop-Loss: alles verkaufen, wenn alle Levels gekauft sind und der Kurs weitere X % fällt |
+| `--trend N` | Einstieg und Nachkäufe nur, wenn der Vortag über dem N-Tage-Durchschnitt schloss |
+| `--trend-exit` | mit `--trend`: alles verkaufen, sobald der Vortag darunter schloss |
 | `--no-restart` | nach einem Verkauf nicht neu einsteigen |
 | `--order-usd`, `--fee` | Betrag pro Order (Standard 1'000 $) und Kommission (Standard 1 $) |
-| `--years` | Jahre Historie (Standard 10) |
-| `--split` | Ergebnis zusätzlich für die 1. und 2. Hälfte, zeigt, ob es stabil ist |
-| `--sweep` | testet 225 Kombinationen auf der **1. Hälfte**, prüft die beste auf der **2. Hälfte** |
+| `--years` | Jahre Backtest (Standard 10, plus 1 Jahr Vorlauf) |
+| `--split` | Ergebnis zusätzlich für 1. und 2. Hälfte, zeigt, ob es stabil ist |
 
-**So liest du das Ergebnis:**
-- `Differenz` = Strategie minus Kaufen und Halten. Positiv heisst, die Strategie war besser.
-- `max Kapital` = wie viel Geld maximal gleichzeitig investiert war. `max DD $` = grösster Rückgang vom Höchststand.
-- Beim `--sweep` zählt nur die **TEST-Tabelle**. Die Trainingszahlen sind geschönt, weil die Parameter genau auf
-  diese Daten ausgesucht wurden (Overfitting).
-- Wählst du nur Aktien, die wir heute als Gewinner kennen (NVDA, AAPL …), sieht jede Kaufstrategie gut aus.
-  Nimm immer auch Verlierer dazu (z.B. NKE, PFE, DIS).
+### `research.py`: Strategien vergleichen
 
-Ausführungsmodell: Einstieg zum Eröffnungskurs, Limit-Buys zum Level-Preis (oder tieferen Open), Take-Profit
-nicht am Einstiegs- oder Nachkauf-Tag, Stop-Loss hat Vorrang. Die Kursdaten werden pro Tag in `.cache/` zwischengespeichert.
+```bat
+python research.py
+```
 
-> Der Bot selbst verkauft (noch) nie, `--tp`/`--sl` gibt es bisher nur im Backtester.
+```bat
+python research.py --benchmark QQQ --no-sweep
+```
+
+Verglichen werden:
+- **Kaufen & Halten SPY** (breiter ETF) und **alle Aktien gleich gewichtet halten**
+- **Grid** aus dem Video, mit 200-Tage-Trendfilter, mit Trendfilter und Exit
+- **Grid, im Training optimiert**: 144 Einstellungen werden auf der 1. Hälfte nach Sharpe bewertet, die beste wird auf der 2. Hälfte geprüft
+- **Momentum-Rotation** aus dem alten Java-QuantDesk: am ersten Handelstag jedes Monats die 5 Aktien mit der besten
+  Rendite der letzten 63 Tage halten (nur positive, sonst Cash). Aussteiger werden verkauft, Einsteiger mit dem freien Geld gekauft.
+
+Beim Momentum ist die Regel fest, sie wird nicht optimiert. **Entscheidend ist die TEST-Tabelle**, denn die Trainingszahlen
+sind beim optimierten Grid geschönt (Overfitting).
+
+### Ehrliche Grenzen
+
+- **Survivorship-Bias:** Das Universum enthält nur Firmen, die es heute noch gibt (plus 15 schwache Titel). Pleitefirmen
+  fehlen, deshalb sehen alle Kaufstrategien besser aus als in Wirklichkeit.
+- Es wird ohne Blick in die Zukunft gerechnet: Signale kommen vom Schlusskurs des Vortags, gehandelt wird zum Eröffnungskurs.
+  Schlupf (Slippage), Steuern und Wechselkurse (dein Konto ist in CHF) sind nicht eingerechnet.
+- Ausführung: Einstieg zum Eröffnungskurs, Limit-Buys zum Level-Preis oder tieferen Open. Take-Profit nie am Einstiegs-
+  oder Nachkauf-Tag, Stop-Loss hat Vorrang. Die Kursdaten werden pro Tag in `.cache/` zwischengespeichert.
+
+> Der Bot selbst verkauft (noch) nie. Take-Profit, Stop-Loss, Trendfilter und Momentum gibt es bisher nur im Backtest.
 
 ## Aufbau des Codes
 
 ```
 bot.py                      Tkinter-GUI (Einstiegspunkt)
-backtest.py                 Backtester (Kommandozeile)
+backtest.py                 Backtest einzelner Aktien (Kommandozeile)
+research.py                 Strategie-Vergleich auf ~50 Aktien (Kommandozeile)
+data/universe.csv           Aktien für research.py
 start.bat                   Doppelklick-Start
 quantdesk/
   config.py                 Einstellungen aus .env, DU-Konto-Pflicht
@@ -227,7 +267,9 @@ quantdesk/
   engine.py                 Hintergrund-Loop, thread-sicher, STOP ALL
   ai.py                     Claude Portfolio Manager
   history.py                historische Tageskurse (Yahoo) mit Cache
-  backtest.py               Backtest-Logik, Vergleich mit Kaufen und Halten, Sweep
+  backtest.py               Grid-Backtest inkl. Trendfilter, Vergleich mit Kaufen und Halten
+  metrics.py                Kennzahlen: Rendite p.a., Sharpe, max Drawdown, Ø investiert
+  research.py               Portfolio-Vergleich: Grid, Momentum, Kaufen & Halten, ETF; Training/Test
 tests/                      pytest (ohne Netzwerk, ohne tkinter)
 ```
 
