@@ -19,3 +19,6 @@ venv/
 # Übergabe-Paket (nie committen)
 quantdesk-umbau/
 *.corrupt.json
+
+# Backtest-Kursdaten (Cache)
+.cache/

@@ -162,10 +162,57 @@ Das Log landet zusätzlich in `quantdesk.log`.
 Level-Status: `pending` (noch nicht platziert) → `placed` → `filled` oder `cancelled`. Die Datei wird atomar
 geschrieben; ist sie kaputt, wird sie als `*.corrupt.json` gesichert und der Bot startet mit leerer Liste.
 
+## Backtest: Funktioniert die Strategie?
+
+Bevor du Parameter im Bot änderst, prüf sie mit dem Backtester auf historischen Tageskursen
+(Yahoo, split- und dividendenbereinigt, bis 10 Jahre). Er vergleicht **immer mit Kaufen und Halten**
+desselben Budgets. Denn eine Strategie, die nur dann Geld verdient, wenn die Aktie ohnehin steigt, hat keinen eigenen Vorteil.
+
+```bat
+.venv\Scripts\activate
+
+REM Video-Strategie: 5 Levels à 2 %, nie verkaufen
+python backtest.py AAPL
+
+REM andere Parameter, mit Take-Profit
+python backtest.py AAPL MSFT NKE --drawdown 5 --tp 10
+
+REM zusätzlich 1. und 2. Hälfte getrennt
+python backtest.py AAPL MSFT --tp 10 --sl 10 --split
+
+REM Parameter suchen (1. Hälfte) und ehrlich prüfen (2. Hälfte)
+python backtest.py SPY AAPL MSFT NKE INTC --sweep
+```
+
+| Option | Bedeutung |
+|---|---|
+| `--levels`, `--drawdown` | Grid wie im Bot (Drawdown in %) |
+| `--tp` | Take-Profit: alles verkaufen, wenn der Kurs X % über dem Ø-Einstand liegt, danach neuer Zyklus |
+| `--sl` | Stop-Loss: alles verkaufen, wenn alle Levels gekauft sind und der Kurs weitere X % fällt |
+| `--no-restart` | nach einem Verkauf nicht neu einsteigen |
+| `--order-usd`, `--fee` | Betrag pro Order (Standard 1'000 $) und Kommission (Standard 1 $) |
+| `--years` | Jahre Historie (Standard 10) |
+| `--split` | Ergebnis zusätzlich für die 1. und 2. Hälfte, zeigt, ob es stabil ist |
+| `--sweep` | testet 225 Kombinationen auf der **1. Hälfte**, prüft die beste auf der **2. Hälfte** |
+
+**So liest du das Ergebnis:**
+- `Differenz` = Strategie minus Kaufen und Halten. Positiv heisst, die Strategie war besser.
+- `max Kapital` = wie viel Geld maximal gleichzeitig investiert war. `max DD $` = grösster Rückgang vom Höchststand.
+- Beim `--sweep` zählt nur die **TEST-Tabelle**. Die Trainingszahlen sind geschönt, weil die Parameter genau auf
+  diese Daten ausgesucht wurden (Overfitting).
+- Wählst du nur Aktien, die wir heute als Gewinner kennen (NVDA, AAPL …), sieht jede Kaufstrategie gut aus.
+  Nimm immer auch Verlierer dazu (z.B. NKE, PFE, DIS).
+
+Ausführungsmodell: Einstieg zum Eröffnungskurs, Limit-Buys zum Level-Preis (oder tieferen Open), Take-Profit
+nicht am Einstiegs- oder Nachkauf-Tag, Stop-Loss hat Vorrang. Die Kursdaten werden pro Tag in `.cache/` zwischengespeichert.
+
+> Der Bot selbst verkauft (noch) nie, `--tp`/`--sl` gibt es bisher nur im Backtester.
+
 ## Aufbau des Codes
 
 ```
 bot.py                      Tkinter-GUI (Einstiegspunkt)
+backtest.py                 Backtester (Kommandozeile)
 start.bat                   Doppelklick-Start
 quantdesk/
   config.py                 Einstellungen aus .env, DU-Konto-Pflicht
@@ -179,6 +226,8 @@ quantdesk/
   storage.py                equities.json atomar laden/speichern
   engine.py                 Hintergrund-Loop, thread-sicher, STOP ALL
   ai.py                     Claude Portfolio Manager
+  history.py                historische Tageskurse (Yahoo) mit Cache
+  backtest.py               Backtest-Logik, Vergleich mit Kaufen und Halten, Sweep
 tests/                      pytest (ohne Netzwerk, ohne tkinter)
 ```
 
