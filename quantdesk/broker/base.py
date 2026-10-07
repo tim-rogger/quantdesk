@@ -81,6 +81,23 @@ class Order:
 
 
 @dataclass(frozen=True)
+class Execution:
+    """Eine Ausführung (Teil-Fill) einer Order, wie IBKR sie unter /iserver/account/trades meldet."""
+
+    exec_id: str
+    order_id: str
+    symbol: str
+    side: str  # "BUY" / "SELL"
+    qty: float
+    price: float
+    ts: float  # Ausführungszeit (Unix-Sekunden, UTC)
+
+    def to_dict(self) -> dict:
+        return {"exec_id": self.exec_id, "order_id": self.order_id, "symbol": self.symbol, "side": self.side,
+                "qty": self.qty, "price": self.price, "ts": self.ts}
+
+
+@dataclass(frozen=True)
 class OrderResult:
     order_id: str
     status: str
@@ -128,3 +145,7 @@ class Broker(ABC):
 
     def get_open_orders(self) -> list[Order]:
         return [o for o in self.get_orders() if o.is_open]
+
+    def get_executions(self, days: int = 7) -> list[Execution]:
+        """Ausführungen der letzten Tage (auch von Orders früherer Sitzungen). Standard: keine."""
+        return []

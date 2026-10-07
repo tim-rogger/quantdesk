@@ -10,6 +10,8 @@ from quantdesk.broker.dry_run import DryRunBroker, OfflineBroker
 from quantdesk.broker.ibkr import IbkrClient
 from quantdesk.config import Settings, validate_account_id
 from quantdesk.engine import Engine
+from quantdesk.executions import ExecutionArchive
+from quantdesk.history import load_history
 from quantdesk.journal import Journal
 from quantdesk.marketdata import MarketData
 from quantdesk.trend import TrendFilter
@@ -45,6 +47,8 @@ def build_services(settings: Settings, events: queue.Queue | None = None) -> Ser
         events=events,
         trend=TrendFilter(),
         journal=Journal(settings.journal_file),
+        executions=ExecutionArchive(settings.executions_file),
+        bars=lambda symbol: load_history(symbol, 1),
     )
     ai = PortfolioManager(broker, engine.systems_snapshot, settings.anthropic_model, settings.news_enabled)
     return Services(settings, broker, marketdata, engine, ai, offline)

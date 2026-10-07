@@ -2,6 +2,7 @@
 .env
 equities.json
 journal.jsonl
+executions.jsonl
 
 # Python
 __pycache__/

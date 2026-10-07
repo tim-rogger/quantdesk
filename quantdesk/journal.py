@@ -19,6 +19,7 @@ class Fill:
     kind: str  # entry | level | exit | adopted
     order_id: str
     simulated: bool = False
+    estimated: bool = False  # Tag/Preis geschätzt (Ausführung bei IBKR nicht mehr abrufbar)
 
 
 class Journal:
@@ -27,14 +28,29 @@ class Journal:
         self._clock = clock
         self._lock = threading.Lock()
 
-    def record(self, symbol: str, side: str, qty: float, price: float, kind: str, order_id: str, simulated: bool) -> Fill:
-        now = self._clock()
-        fill = Fill(now, time.strftime("%Y-%m-%d", time.gmtime(now)), symbol, side, float(qty), float(price),
-                    kind, str(order_id), simulated)
+    def record(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        price: float,
+        kind: str,
+        order_id: str,
+        simulated: bool,
+        when: float | None = None,
+        estimated: bool = False,
+    ) -> Fill:
+        """`when` = Ausführungszeit (Unix-Sekunden); ohne Angabe: jetzt."""
+        ts = self._clock() if when is None else when
+        fill = Fill(ts, time.strftime("%Y-%m-%d", time.gmtime(ts)), symbol, side, float(qty), float(price),
+                    kind, str(order_id), simulated, estimated)
         with self._lock:
             with open(self.path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(asdict(fill)) + "\n")
         return fill
+
+    def order_ids(self) -> set[str]:
+        return {f.order_id for f in self.read(include_simulated=True)}
 
     def read(self, include_simulated: bool = False) -> list[Fill]:
         if not os.path.exists(self.path):

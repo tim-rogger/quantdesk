@@ -87,6 +87,18 @@ der Backtest zu optimistisch (Schlupf, Fills), und die Backtest-Ergebnisse oben 
 C ist im Backtest bereits durchgefallen, der Vorwärtstest ist ein Experiment. Er ist kein grünes Licht für echtes Geld.
 Diese Regel wird während des Tests **nicht** geändert.
 
+## Vorfälle während des Vorwärtstests
+
+Hier wird jedes technische Problem mit Datum festgehalten. Die Bestehen-Regel oben bleibt unverändert.
+
+| Datum | Vorfall | Folge | Behebung |
+|---|---|---|---|
+| 07.10.2026 | **Fills früherer Sitzungen nicht erkannt.** IBKR listet unter `/iserver/account/orders` nur Orders der laufenden Sitzung. Limit-Buys, die ausgeführt wurden, während der Bot aus war, galten weiter als „platziert“ (z.B. KO Level 1 @ 85.26, gefüllt am 02.10.). | Positionen und Verkäufe waren korrekt, weil sie direkt bei IBKR abgefragt werden. Im Journal fehlten aber 25 Käufe, darunter ein Level-Kauf von CVS vor dessen Verkauf am 07.10. Der Monatsreport hätte falsch gerechnet. | Der Bot fragt beim Start und bei fehlenden Orders `/iserver/account/trades` ab, archiviert jede Ausführung (`executions.jsonl`) und bucht fehlende Fills mit echtem Datum, Preis und Stückzahl nach. **20** Fills ab dem 01.10. sind exakt nachgebucht. **5** Käufe vom 29./30.09. (ELV, M, MMM, PYPL, LLY) sind bei IBKR nicht mehr abrufbar (nur 7 Tage). Sie werden aus der Position abgeleitet, zum Limitpreis, der Tag ist aus den Yahoo-Tagestiefs geschätzt und im Journal als `estimated` markiert. |
+| 07.10.2026 | **WBD-Position verschwunden** (32 Stück, gekauft am 29.09.), ohne Verkauf durch den Bot. Yahoo liefert keine Kurse mehr. | Das Journal führt 32 WBD, IBKR 0. Der Bot warnt und handelt WBD nicht weiter. | **Offen:** Tim prüft im IBKR-Portal (Kontoauszug, Corporate Actions), was passiert ist und zu welchem Preis. Danach wird ein Journal-Eintrag mit dem tatsächlichen Erlös ergänzt. |
+
+F5 („keine doppelt gebuchten Orders, kein zweiter Einstieg ohne Verkauf dazwischen“) ist durch den ersten Vorfall nicht
+verletzt: Es wurde nichts doppelt gehandelt, nur unvollständig gebucht. Der Vorfall wird trotzdem beim Urteil erwähnt.
+
 ## Phasen
 
 ### Phase 0 – Aufräumen ✅
@@ -107,7 +119,7 @@ Diese Regel wird während des Tests **nicht** geändert.
 - [x] Test: Die Engine macht Tag für Tag dieselben Käufe und Verkäufe wie die Backtest-Simulation
 - [x] `forward_test.py setup` (C-Systeme anlegen) und `forward_test.py report` (Monatsreport)
 
-### Phase 3 – Vorwärtstest von C auf dem Paper-Konto (6 Monate) ⏳ wartet auf Tims Start
+### Phase 3 – Vorwärtstest von C auf dem Paper-Konto (6 Monate) ⏳ läuft seit 29.09.2026
 - [ ] Vorbereitung im DRY_RUN: `python forward_test.py setup`, Bot starten, alle C-Zeilen einschalten, einen Tag beobachten
 - [ ] Paper-Konto aufräumen: Aktien aus der Liste, die das Konto schon hält (z.B. die 1 AAPL aus dem Test), verkaufen
 - [ ] **Tim bestätigt den Start** → `QUANTDESK_MODE=PAPER`, Bot neu starten

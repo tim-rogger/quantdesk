@@ -3,10 +3,12 @@
     python forward_test.py setup              # C-Systeme für data/universe.csv in equities.json anlegen (Status Off)
     python forward_test.py report             # Monatsreport: C live vs. Backtest vs. SPY vs. SPY/Cash-Mischung
     python forward_test.py report --include-dry   # Report auch mit simulierten DRY_RUN-Fills (zum Ausprobieren)
+    python forward_test.py import-trades DATEI    # gespeicherte IBKR-Antwort von /iserver/account/trades ins Archiv
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 import requests
@@ -20,6 +22,8 @@ from quantdesk.forward import (
     c_systems,
     setup_systems,
 )
+from quantdesk.broker.ibkr import parse_executions
+from quantdesk.executions import ExecutionArchive
 from quantdesk.history import load_history
 from quantdesk.journal import Journal
 from quantdesk.research import load_universe
@@ -62,6 +66,9 @@ def print_report(r) -> None:
     print("-" * len(header))
     for name in names:
         print(f"{name[:37]:38}" + "".join(f"{x:>8.1%}" for x in r.monthly[name]))
+    if r.estimated_fills:
+        print(f"\nHinweis: {r.estimated_fills} Fill(s) mit geschätztem Tag (Ausführung bei IBKR nicht mehr abrufbar, "
+              "Preis = Limitpreis) – siehe ROADMAP, Vorfälle.")
     print("\nBestehen-Kriterien (vorher festgelegt, siehe ROADMAP.md)")
     for c in r.checks:
         mark = "✓" if c.ok else "✗"
@@ -109,6 +116,22 @@ def cmd_report(args, settings) -> int:
     return 0
 
 
+def cmd_import_trades(args, settings) -> int:
+    """Ausführungen aus einer gespeicherten IBKR-Antwort ins Archiv übernehmen (doppelte werden übersprungen)."""
+    if not settings.ibkr_account_id:
+        print("IBKR_ACCOUNT_ID fehlt in .env – ohne Konto-ID kann nicht gefiltert werden.")
+        return 1
+    with open(args.file, encoding="utf-8") as f:
+        executions = parse_executions(json.load(f), settings.ibkr_account_id)
+    archive = ExecutionArchive(settings.executions_file)
+    before = len(archive.load())
+    after = len(archive.merge(executions))
+    print(f"{len(executions)} Ausführungen in {args.file}, davon {after - before} neu ins Archiv "
+          f"{settings.executions_file} übernommen (jetzt {after}).")
+    print("Beim nächsten Start bucht der Bot daraus fehlende Fills nach.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -120,9 +143,12 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--start", default=None, help="Starttag YYYY-MM-DD (Standard: erster Fill im Journal)")
     r.add_argument("--fee", type=float, default=1.0, help="Kommission pro Order in $")
     r.add_argument("--include-dry", action="store_true", help="simulierte DRY_RUN-Fills mitzählen")
+    t = sub.add_parser("import-trades", help="gespeicherte IBKR-Ausführungen ins Archiv übernehmen")
+    t.add_argument("file", help="JSON-Antwort von /iserver/account/trades")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     settings = load_settings()
-    return cmd_setup(args, settings) if args.cmd == "setup" else cmd_report(args, settings)
+    commands = {"setup": cmd_setup, "report": cmd_report, "import-trades": cmd_import_trades}
+    return commands[args.cmd](args, settings)
 
 
 if __name__ == "__main__":

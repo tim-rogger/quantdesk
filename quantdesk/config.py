@@ -39,6 +39,7 @@ class Settings:
     data_file: str
     news_enabled: bool
     journal_file: str = "journal.jsonl"
+    executions_file: str = "executions.jsonl"
 
     @property
     def dry_run(self) -> bool:
@@ -78,4 +79,5 @@ def load_settings() -> Settings:
         data_file=os.getenv("QUANTDESK_DATA_FILE", "equities.json"),
         news_enabled=_bool(os.getenv("QUANTDESK_NEWS_ENABLED"), True),
         journal_file=os.getenv("QUANTDESK_JOURNAL_FILE", "journal.jsonl"),
+        executions_file=os.getenv("QUANTDESK_EXECUTIONS_FILE", "executions.jsonl"),
     )

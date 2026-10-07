@@ -68,6 +68,7 @@ class Level:
     price: float
     status: str = PENDING
     order_id: str | None = None
+    qty: float | None = None  # gefüllte Stückzahl (für den Abgleich mit der Position)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Level":
@@ -75,7 +76,9 @@ class Level:
         if status not in LEVEL_STATUSES:
             raise ValueError(f"Unbekannter Level-Status: {status}")
         order_id = d.get("order_id")
-        return cls(int(d["level"]), float(d["price"]), status, str(order_id) if order_id is not None else None)
+        qty = d.get("qty")
+        return cls(int(d["level"]), float(d["price"]), status, str(order_id) if order_id is not None else None,
+                   float(qty) if qty is not None else None)
 
 
 def build_levels(entry_price: float, num_levels: int, drawdown: float) -> list[Level]:
@@ -104,6 +107,8 @@ class EquitySystem:
     order_usd: float | None = None  # Ordergrösse in $ (wie im Backtest); None = feste Stückzahl aus .env
     exit_order_id: str | None = None
     exit_order_time: float | None = None
+    entry_qty: float | None = None  # Stückzahl des Einstiegs
+    entry_ts: float | None = None  # Zeitpunkt des Einstiegs (für geschätzte Fill-Tage)
 
     def __post_init__(self):
         validate_grid(self.num_levels, self.drawdown)
@@ -150,6 +155,8 @@ class EquitySystem:
         self.simulated = False
         self.exit_order_id = None
         self.exit_order_time = None
+        self.entry_qty = None
+        self.entry_ts = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -176,7 +183,15 @@ class EquitySystem:
             order_usd=float(d["order_usd"]) if d.get("order_usd") else None,
             exit_order_id=d.get("exit_order_id"),
             exit_order_time=d.get("exit_order_time"),
+            entry_qty=float(d["entry_qty"]) if d.get("entry_qty") is not None else None,
+            entry_ts=d.get("entry_ts"),
         )
+
+    def accounted_qty(self) -> float | None:
+        """Stückzahl laut eigener Buchführung (Einstieg + gefüllte Levels). None = Einstieg unbekannt."""
+        if self.entry_qty is None:
+            return None
+        return self.entry_qty + sum(lv.qty or 0.0 for lv in self.levels if lv.status == FILLED)
 
 
 def find_level_order(level: Level, symbol: str, orders: Iterable[Order], tol: float = PRICE_TOLERANCE) -> Order | None:

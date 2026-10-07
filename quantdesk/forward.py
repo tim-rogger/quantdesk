@@ -134,6 +134,7 @@ class ForwardReport:
     rows: dict[str, dict[str, object]]  # Name -> {"USD": Perf, "CHF": Perf}
     monthly: dict[str, list[float]]  # Name -> Monatsrenditen (USD)
     checks: list[Check]
+    estimated_fills: int = 0  # Fills mit geschätztem Tag (Ausführung bei IBKR nicht mehr abrufbar)
 
     @property
     def passed(self) -> bool:
@@ -213,4 +214,5 @@ def build_report(
               abs(gap) <= MAX_BACKTEST_GAP, f"Abweichung {gap:+.1%}"),
         Check("F5", "keine technischen Fehler", not problems, "; ".join(problems) or "keine gefunden"),
     ]
-    return ForwardReport(start, end, len(days), months_done, finished, rows, monthly, checks)
+    estimated = sum(1 for f in fills if getattr(f, "estimated", False))
+    return ForwardReport(start, end, len(days), months_done, finished, rows, monthly, checks, estimated)

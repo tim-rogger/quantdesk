@@ -6,6 +6,7 @@ GUI laufen über `engine.events` (queue.Queue) – Tkinter selbst wird nur im Ha
 """
 from __future__ import annotations
 
+import calendar
 import copy
 import logging
 import queue
@@ -16,6 +17,8 @@ from typing import Callable
 
 from quantdesk import storage
 from quantdesk.broker.base import LOGIN_HINT, Broker, BrokerError, Order, Position
+from quantdesk.executions import ExecutionArchive, OrderFill, aggregate
+from quantdesk.history import Bar
 from quantdesk.journal import Journal
 from quantdesk.marketdata import MarketData, Quote
 from quantdesk.storage import StorageError
@@ -35,6 +38,7 @@ log = logging.getLogger(__name__)
 
 KEEPALIVE_SECONDS = 60
 ENTRY_ORDER_TIMEOUT = 300  # Einstiegs-Order weder offen noch gefüllt auffindbar -> nach 5 min neu versuchen
+EXEC_REFRESH_SECONDS = 300  # Ausführungen höchstens alle 5 min neu abfragen (beim Start immer)
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,8 @@ class Engine:
         clock: Callable[[], float] = time.time,
         trend: Callable[[str, int], bool | None] | None = None,
         journal: Journal | None = None,
+        executions: ExecutionArchive | None = None,
+        bars: Callable[[str], list[Bar]] | None = None,
     ):
         self.broker = broker
         self.marketdata = marketdata
@@ -67,6 +73,10 @@ class Engine:
         self._clock = clock
         self.trend = trend  # (Symbol, SMA-Tage) -> True/False/None (None = unbekannt)
         self.journal = journal
+        self.executions = executions  # Archiv aller IBKR-Ausführungen (IBKR selbst liefert nur 7 Tage)
+        self.bars = bars  # Tageskurse, um den Tag geschätzter Fills zu bestimmen
+        self._last_exec_fetch: float | None = None
+        self._fills: dict[str, OrderFill] = {}
         self._lock = threading.RLock()
         self._halt = threading.Event()  # STOP ALL
         self._shutdown = threading.Event()
@@ -84,6 +94,7 @@ class Engine:
         except StorageError as e:
             self._emit("error", str(e))
         self._drop_simulated_state()
+        self._migrate_from_journal()
         self._publish()
 
     # ------------------------------------------------------------ Hilfen
@@ -142,6 +153,32 @@ class Engine:
                 s.reset_trading_state()
                 changed = True
                 self._emit("info", f"{s.symbol}: simulierter DRY_RUN-Zustand zurückgesetzt.", s.symbol)
+        if changed:
+            self._save()
+
+    def _migrate_from_journal(self) -> None:
+        """Ältere Zustände ohne Stückzahlen aus dem Journal ergänzen (für den Abgleich mit der Position)."""
+        if self.journal is None:
+            return
+        try:
+            fills = self.journal.read()
+        except (OSError, ValueError):
+            return
+        changed = False
+        for s in self.systems.values():
+            if s.entry_price is None or s.entry_qty is not None:
+                continue
+            mine = [f for f in fills if f.symbol == s.symbol]
+            last_exit = max((f.ts for f in mine if f.side == "SELL"), default=-1.0)
+            entries = [f for f in mine if f.kind in ("entry", "adopted") and f.ts > last_exit]
+            if not entries:
+                continue
+            s.entry_qty, s.entry_ts = entries[-1].qty, entries[-1].ts
+            by_order = {f.order_id: f for f in mine if f.kind == "level" and f.ts > last_exit}
+            for lv in s.levels:
+                if lv.status == FILLED and lv.qty is None and lv.order_id in by_order:
+                    lv.qty = by_order[lv.order_id].qty
+            changed = True
         if changed:
             self._save()
 
@@ -265,6 +302,8 @@ class Engine:
             return
         self._clear("read")
         trend_states = self._trend_states(active)
+        fills = self._order_fills(orders)
+        self._book_orphans(fills)
         for sym in active:
             if self.paused:
                 break
@@ -273,7 +312,7 @@ class Engine:
                 if system is None or not system.is_on:
                     continue
                 try:
-                    self._trade_system(system, positions.get(sym), orders, trend_states.get(sym, True))
+                    self._trade_system(system, positions.get(sym), orders, trend_states.get(sym, True), fills)
                     self._clear(f"trade:{sym}")
                 except BrokerError as e:
                     self._emit("error", f"{sym}: {e}", sym, key=f"trade:{sym}")
@@ -297,6 +336,52 @@ class Engine:
                 self._clear(f"trend:{sym}")
         return states
 
+    def _order_fills(self, orders: list[Order]) -> dict[str, OrderFill]:
+        """Ausführungen nach Order-ID. Abgefragt beim Start und wenn eine Order des Bots bei IBKR fehlt
+        (IBKR listet nur Orders der laufenden Sitzung – Fills von früheren Tagen stehen nur hier)."""
+        listed = {o.order_id for o in orders}
+        with self._lock:
+            tracked = {oid for s in self.systems.values() if s.is_on for oid in s.open_order_ids()}
+        now = self._clock()
+        due = self._last_exec_fetch is None or (
+            bool(tracked - listed) and now - self._last_exec_fetch >= EXEC_REFRESH_SECONDS)
+        if due:
+            self._last_exec_fetch = now
+            try:
+                fresh = self.broker.get_executions(7)
+                self._clear("exec")
+            except BrokerError as e:
+                self._emit("warn", f"Ausführungen nicht abrufbar: {e}", key="exec")
+                fresh = []
+            archive = self.executions.merge(fresh) if self.executions else fresh
+            self._fills = aggregate(archive)
+        return self._fills
+
+    def _book_orphans(self, fills: dict[str, OrderFill]) -> None:
+        """Ausführungen in Symbolen des Bots, die zu keiner verfolgten Order passen und noch nicht im Journal
+        stehen (z.B. ein Level, das vor einem Verkauf gefüllt wurde, als der Bot aus war) – nachbuchen."""
+        if self.journal is None or not fills:
+            return
+        try:
+            journal = self.journal.read(include_simulated=True)
+        except (OSError, ValueError):
+            return
+        if not journal:
+            return  # Vorwärtstest hat noch nicht begonnen
+        start, booked = min(f.ts for f in journal), {f.order_id for f in journal}
+        with self._lock:
+            systems = {sym: s for sym, s in self.systems.items() if s.is_on and s.order_usd}
+            tracked = {oid for s in systems.values() for oid in s.open_order_ids()}
+            for f in sorted(fills.values(), key=lambda x: x.ts):
+                s = systems.get(f.symbol)
+                if s is None or f.order_id in booked or f.order_id in tracked or f.ts < start - 86400:
+                    continue
+                kind = "level" if f.side == "BUY" else "exit"
+                self._record(s, f.side, f.qty, f.price, kind, None, f.order_id, when=f.ts)
+                booked.add(f.order_id)
+                self._emit("warn", f"{f.symbol}: Ausführung {f.side} {f.qty:g} @ {f.price:.2f} vom "
+                                   f"{time.strftime('%d.%m.', time.gmtime(f.ts))} nachgebucht (Order {f.order_id}).", f.symbol)
+
     def _qty(self, s: EquitySystem, price: float | None) -> int | None:
         """Stückzahl: fester Dollarbetrag wie im Backtest (gerundet, mind. 1) oder feste Stückzahl."""
         if s.order_usd is None:
@@ -306,12 +391,12 @@ class Engine:
         return max(1, round(s.order_usd / price))
 
     def _record(self, s: EquitySystem, side: str, qty: float, price: float, kind: str, order: Order | None,
-                order_id: str) -> None:
+                order_id: str, when: float | None = None, estimated: bool = False) -> None:
         if self.journal is None:
             return
         try:
             simulated = s.simulated or (order.simulated if order else False) or str(order_id).startswith("DRY-")
-            self.journal.record(s.symbol, side, qty, price, kind, order_id, simulated)
+            self.journal.record(s.symbol, side, qty, price, kind, order_id, simulated, when=when, estimated=estimated)
         except OSError as e:
             self._emit("error", f"Journal nicht schreibbar: {e}", key="journal")
 
@@ -361,10 +446,20 @@ class Engine:
 
     # ----------------------------------------------------------- Strategie
     def _trade_system(self, s: EquitySystem, pos: Position | None, orders: list[Order],
-                      trend_ok: bool | None = True) -> None:
+                      trend_ok: bool | None = True, fills: dict[str, OrderFill] | None = None) -> None:
         s.position = pos.qty if pos else 0.0
+        fills = fills or {}
+        listed = {o.order_id for o in orders}
+        # 1) Fills von Orders nachbuchen, die IBKR nicht mehr listet (Bot war aus, neue Sitzung) – IMMER zuerst
+        self._reconcile_levels(s, listed, fills)
+        self._infer_missing_fills(s, pos, listed, fills)
         if s.exit_order_id:
-            self._handle_exit_pending(s, pos, orders)
+            self._handle_exit_pending(s, pos, orders, fills)
+            return
+        if s.entry_price is not None and (pos is None or pos.qty <= 0) and s.exit_order_id is None and (
+                s.entry_qty or any(lv.status == FILLED for lv in s.levels)):
+            self._emit("warn", f"{s.symbol}: Position bei IBKR verschwunden, ohne Verkauf durch den Bot – Firmenereignis "
+                               "(Übernahme, Delisting)? Bitte im IBKR-Portal prüfen.", s.symbol, key=f"gone:{s.symbol}")
             return
         ok = True if s.trend_sma is None else trend_ok
         if s.trend_exit and ok is False:
@@ -372,7 +467,7 @@ class Engine:
             return
         allow_new = ok is True  # neue Käufe nur bei bekanntem Aufwärtstrend (wie im Backtest)
         if s.entry_price is None:
-            self._handle_entry(s, pos, orders, allow_new)
+            self._handle_entry(s, pos, orders, allow_new, fills)
             if s.entry_price is None:
                 return
         s.ensure_levels()
@@ -382,7 +477,7 @@ class Engine:
                 if order is None:
                     continue
                 if order.is_filled:
-                    lv.status = FILLED
+                    lv.status, lv.qty = FILLED, order.qty
                     self._record(s, "BUY", order.qty, order.avg_fill_price or lv.price, "level", order, order.order_id)
                     self._emit("order", f"{s.symbol}: Level {lv.level} @ {lv.price:.2f} gefüllt.", s.symbol)
                 elif order.is_cancelled:
@@ -407,6 +502,58 @@ class Engine:
                     f"{s.symbol}: Limit-Buy {qty} @ {lv.price:.2f} (Level {lv.level}) platziert – ID {result.order_id}.",
                     s.symbol,
                 )
+
+    def _reconcile_levels(self, s: EquitySystem, listed: set[str], fills: dict[str, OrderFill]) -> None:
+        for lv in s.levels:
+            if lv.status != PLACED or not lv.order_id or lv.order_id in listed:
+                continue
+            f = fills.get(lv.order_id)
+            if f is None or f.side != "BUY":
+                continue
+            lv.status, lv.qty = FILLED, f.qty
+            self._record(s, "BUY", f.qty, f.price, "level", None, lv.order_id, when=f.ts)
+            self._emit("order", f"{s.symbol}: Level {lv.level} wurde am {time.strftime('%d.%m.', time.gmtime(f.ts))} "
+                                f"gefüllt ({f.qty:g} @ {f.price:.2f}) – nachgebucht.", s.symbol)
+
+    def _infer_missing_fills(self, s: EquitySystem, pos: Position | None, listed: set[str],
+                             fills: dict[str, OrderFill]) -> None:
+        """Rückfallebene: Position grösser als die eigene Buchführung, Ausführung bei IBKR nicht mehr abrufbar
+        (älter als 7 Tage) -> verschwundene Levels der Reihe nach als gefüllt buchen, Tag aus Tagestiefs geschätzt."""
+        accounted = s.accounted_qty()
+        if accounted is None or pos is None or s.exit_order_id:
+            return
+        excess = pos.qty - accounted
+        if excess < 0.5:
+            return
+        for lv in sorted(s.levels, key=lambda x: x.level):
+            if lv.status != PLACED or not lv.order_id or lv.order_id in listed or lv.order_id in fills:
+                continue
+            expected = self._qty(s, lv.price)
+            if expected is None or expected > excess + 1e-9:
+                break
+            lv.status, lv.qty = FILLED, float(expected)
+            excess -= expected
+            when = self._estimate_fill_ts(s, lv.price)
+            self._record(s, "BUY", expected, lv.price, "level", None, lv.order_id, when=when, estimated=True)
+            self._emit("warn", f"{s.symbol}: Level {lv.level} aus der Position abgeleitet ({expected} @ {lv.price:.2f}, "
+                               f"Tag geschätzt {time.strftime('%d.%m.', time.gmtime(when))}) – im Journal als geschätzt markiert.",
+                       s.symbol)
+        if excess >= 0.5:
+            self._emit("warn", f"{s.symbol}: Position hat {excess:g} Stück mehr als gebucht – nicht zuordenbar "
+                               "(manueller Kauf?).", s.symbol, key=f"excess:{s.symbol}")
+
+    def _estimate_fill_ts(self, s: EquitySystem, price: float) -> float:
+        """Erster Handelstag nach dem Einstieg, an dem das Tagestief den Limitpreis erreichte (17:00 UTC)."""
+        if self.bars is not None:
+            try:
+                bars = self.bars(s.symbol)
+            except Exception:  # Schätzung ist optional
+                bars = []
+            since = time.strftime("%Y-%m-%d", time.gmtime(s.entry_ts)) if s.entry_ts else ""
+            for b in bars:
+                if b.day >= since and b.low <= price:
+                    return float(calendar.timegm(time.strptime(b.day + " 17:00", "%Y-%m-%d %H:%M")))
+        return self._clock()
 
     def _trend_exit(self, s: EquitySystem, pos: Position | None, orders: list[Order]) -> None:
         """Trend gebrochen: offene Orders stornieren, ganze Position per Market verkaufen (Backtest: Verkauf zum Open)."""
@@ -439,8 +586,18 @@ class Engine:
             s.reset_trading_state()
             self._emit("info", f"{s.symbol}: Trend unter SMA{s.trend_sma} – keine Position, warte auf Aufwärtstrend.", s.symbol)
 
-    def _handle_exit_pending(self, s: EquitySystem, pos: Position | None, orders: list[Order]) -> None:
+    def _handle_exit_pending(self, s: EquitySystem, pos: Position | None, orders: list[Order],
+                             fills: dict[str, OrderFill] | None = None) -> None:
         order = next((o for o in orders if o.order_id == s.exit_order_id), None)
+        f = (fills or {}).get(s.exit_order_id)
+        if order is None and f is not None and f.side == "SELL":
+            self._record(s, "SELL", f.qty, f.price, "exit", None, f.order_id, when=f.ts)
+            self._emit("order", f"{s.symbol}: Verkauf vom {time.strftime('%d.%m.', time.gmtime(f.ts))} nachgebucht "
+                                f"({f.qty:g} @ {f.price:.2f}) – neuer Zyklus bei Aufwärtstrend.", s.symbol)
+            simulated = s.simulated
+            s.reset_trading_state()
+            s.simulated = simulated
+            return
         if order is not None and order.is_filled:
             quote = self.quotes.get(s.symbol)
             price = order.avg_fill_price or (quote.price if quote else 0.0)
@@ -463,7 +620,8 @@ class Engine:
                 s.exit_order_id = s.exit_order_time = None
                 self._emit("warn", f"{s.symbol}: Verkaufs-Order nicht mehr auffindbar – neuer Versuch nächste Runde.", s.symbol)
 
-    def _handle_entry(self, s: EquitySystem, pos: Position | None, orders: list[Order], allow_new: bool = True) -> None:
+    def _handle_entry(self, s: EquitySystem, pos: Position | None, orders: list[Order], allow_new: bool = True,
+                      fills: dict[str, OrderFill] | None = None) -> None:
         if pos is not None and pos.qty < 0:
             self._emit("warn", f"{s.symbol}: Short-Position vorhanden – Grid wird nicht gehandelt.", s.symbol, key=f"short:{s.symbol}")
             return
@@ -471,15 +629,24 @@ class Engine:
             # Einstiegspreis EINMAL setzen: Ausführungspreis der eigenen Einstiegs-Order, sonst avgPrice
             # der Position (bei IBKR inkl. Kommission, z.B. 332.21 statt 331.21)
             entry_order = next((o for o in orders if o.order_id == s.entry_order_id), None) if s.entry_order_id else None
+            entry_fill = (fills or {}).get(s.entry_order_id) if s.entry_order_id and entry_order is None else None
             if entry_order is not None and entry_order.is_filled and entry_order.avg_fill_price:
                 s.entry_price = round(entry_order.avg_fill_price, 2)
+            elif entry_fill is not None:
+                s.entry_price = round(entry_fill.price, 2)
             else:
                 s.entry_price = round(pos.avg_price, 2)
             s.simulated = s.simulated or pos.simulated
             how = "Einstieg gefüllt" if s.entry_order_id else "bestehende Position übernommen"
             if entry_order is not None and entry_order.is_filled:
+                s.entry_qty, s.entry_ts = entry_order.qty, self._clock()
                 self._record(s, "BUY", entry_order.qty, s.entry_price, "entry", entry_order, entry_order.order_id)
+            elif entry_fill is not None:
+                s.entry_qty, s.entry_ts = entry_fill.qty, entry_fill.ts
+                self._record(s, "BUY", entry_fill.qty, entry_fill.price, "entry", None, entry_fill.order_id,
+                             when=entry_fill.ts)
             else:
+                s.entry_qty, s.entry_ts = pos.qty, self._clock()
                 self._record(s, "BUY", pos.qty, s.entry_price, "adopted", None, s.entry_order_id or "bestand")
             s.entry_order_id = None
             s.entry_order_time = None

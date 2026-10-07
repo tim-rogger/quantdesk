@@ -18,6 +18,8 @@ class FakeBroker(Broker):
         self.fail_reads = False
         self.fail_orders = False
         self.cash = 100_000.0
+        self.executions: list = []  # Ausführungen, wie /iserver/account/trades sie liefert
+        self.execution_calls = 0
         self._ids = itertools.count(1)
 
     # Lesen
@@ -43,6 +45,10 @@ class FakeBroker(Broker):
     def get_last_price(self, symbol):
         return self.price
 
+    def get_executions(self, days=7):
+        self.execution_calls += 1
+        return list(self.executions)
+
     # Schreiben
     def _add(self, symbol, side, qty, order_type, price):
         if self.fail_orders:
@@ -59,6 +65,8 @@ class FakeBroker(Broker):
         return self._add(symbol, side, qty, "LMT", price)
 
     def cancel_order(self, order_id):
+        if order_id not in self.orders:
+            raise BrokerError(f"Order {order_id} unbekannt (Test)")
         self.cancelled.append(order_id)
         o = self.orders[order_id]
         self.orders[order_id] = Order(o.order_id, o.symbol, o.side, o.qty, o.order_type, o.limit_price, "Cancelled")
