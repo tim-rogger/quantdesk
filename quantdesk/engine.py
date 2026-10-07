@@ -452,7 +452,8 @@ class Engine:
             self._sync_exit(s, by_id, fills, broker_qty)
             if s.exit_order_id:
                 return
-        self._plausibility(s, broker_qty)
+        if not self._plausibility(s, broker_qty):
+            return  # eigene Stück fehlen beim Broker: dieses Symbol nicht weiter handeln, bis es geklärt ist
         if not decide or self.paused:
             return
         ok = True if s.trend_sma is None else trend_ok
@@ -555,17 +556,21 @@ class Engine:
             self._emit("error", f"{s.symbol}: Verkaufs-Order {s.exit_order_id} nicht bestätigbar (Broker hält {broker_qty:g}) – "
                                 "bitte im IBKR-Portal prüfen.", s.symbol, key=f"exit:{s.symbol}")
 
-    def _plausibility(self, s: EquitySystem, broker_qty: float) -> None:
-        """Eigene Fills vs. Broker-Bestand. Fremde Stück sind erlaubt, fehlende eigene Stück sind ein Alarm."""
+    def _plausibility(self, s: EquitySystem, broker_qty: float) -> bool:
+        """Eigene Fills vs. Broker-Bestand. Fremde Stück sind erlaubt; fehlende eigene Stück sind ein Alarm und
+        sperren das Symbol (False), bis es geklärt ist (z.B. mit `forward_test.py close`)."""
         own = s.bot_qty()
         if own - broker_qty > 0.5:
             self._emit("error", f"{s.symbol}: Konto hält {broker_qty:g} Stück, eigene Fills ergeben {own:g} – Abweichung "
-                                "(Firmenereignis? manueller Verkauf?). Bitte prüfen.", s.symbol, key=f"plaus:{s.symbol}")
-        elif broker_qty - own > 0.5:
+                                "(Firmenereignis? manueller Verkauf?). Symbol wird nicht weiter gehandelt, bitte prüfen.",
+                       s.symbol, key=f"plaus:{s.symbol}")
+            return False
+        if broker_qty - own > 0.5:
             self._emit("info", f"{s.symbol}: {broker_qty - own:g} fremde Stück im Konto – der Bot fasst sie nicht an.",
                        s.symbol, key=f"plaus:{s.symbol}")
         else:
             self._clear(f"plaus:{s.symbol}")
+        return True
 
     def _book(self, s: EquitySystem, side: str, qty: float, price: float, kind: str, order_id: str,
               when: float | None, estimated: bool, fills: dict[str, OrderFill], note: str = "") -> bool:

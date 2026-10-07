@@ -241,9 +241,11 @@ def test_trading_calendar():
 def test_scheduler_next_run():
     ny = lambda *a: dt.datetime(*a, tzinfo=NEW_YORK)
     assert scheduler.next_run(ny(2026, 10, 7, 9, 0)) == (ny(2026, 10, 7, 10, 0), "trade")
-    assert scheduler.next_run(ny(2026, 10, 7, 10, 0)) == (ny(2026, 10, 7, 15, 30), "reconcile")
-    assert scheduler.next_run(ny(2026, 10, 9, 16, 0)) == (ny(2026, 10, 12, 10, 0), "trade")  # Fr -> Mo
-    assert scheduler.next_run(ny(2026, 11, 25, 16, 0)) == (ny(2026, 11, 27, 10, 0), "trade")  # Thanksgiving übersprungen
+    assert scheduler.next_run(ny(2026, 10, 7, 10, 0)) == (ny(2026, 10, 7, 11, 0), "watchdog")
+    assert scheduler.next_run(ny(2026, 10, 7, 11, 0)) == (ny(2026, 10, 7, 15, 30), "reconcile")
+    assert scheduler.next_run(ny(2026, 10, 9, 16, 0)) == (ny(2026, 10, 12, 10, 0), "trade")  # Fr -> Mo, Wochenende leer
+    assert scheduler.next_run(ny(2026, 11, 25, 16, 0)) == (ny(2026, 11, 26, 10, 0), "holiday")  # Thanksgiving: nur Ping
+    assert scheduler.next_run(ny(2026, 11, 26, 10, 0)) == (ny(2026, 11, 27, 10, 0), "trade")
     # Sommerzeit: 10:00 New York ist im Winter 15:00 UTC, im Sommer 14:00 UTC
     assert scheduler.next_run(ny(2026, 12, 1, 9, 0))[0].astimezone(UTC).hour == 15
 

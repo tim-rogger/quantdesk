@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import logging
 import os
+import shutil
 import sys
 import time
 import traceback
@@ -20,6 +22,7 @@ import traceback
 from quantdesk.app import build_services
 from quantdesk.config import load_settings
 from quantdesk.forward import load_report
+from quantdesk.healthcheck import ping
 from quantdesk.history import load_history
 from quantdesk.notify import Notifier
 from quantdesk.schedule import is_trading_day, ny_today
@@ -39,6 +42,42 @@ log = logging.getLogger("run_daily")
 PASS_WAIT_SECONDS = 10  # nach Market-Orders kurz warten, damit Einstiege gefüllt und Stufen noch heute platziert werden
 MAX_EXTRA_PASSES = 6
 LOCK_STALE_SECONDS = 3600
+DISK_ALARM = 0.85
+RAM_ALARM = 0.90
+EVENTS_KEEP = 500
+
+
+def resource_warnings(path: str, meminfo: str = "/proc/meminfo") -> list[str]:
+    """Speicher > 85 % oder RAM > 90 % belegt -> Warntexte (Linux; anderswo nur Speicher)."""
+    out = []
+    try:
+        du = shutil.disk_usage(path)
+        if du.total and du.used / du.total > DISK_ALARM:
+            out.append(f"Speicher {du.used / du.total:.0%} belegt ({du.free / 1e9:.1f} GB frei).")
+    except OSError:
+        pass
+    try:
+        with open(meminfo, encoding="utf-8") as f:
+            info = {line.split(":")[0]: float(line.split()[1]) for line in f if ":" in line}
+        total, avail = info.get("MemTotal"), info.get("MemAvailable")
+        if total and avail is not None and 1 - avail / total > RAM_ALARM:
+            out.append(f"RAM {1 - avail / total:.0%} belegt.")
+    except (OSError, ValueError, IndexError):
+        pass
+    return out
+
+
+def append_events(path: str, events, keep: int = EVENTS_KEEP) -> None:
+    """Ereignisse für den Verlauf im Dashboard (nur die letzten `keep`)."""
+    rows = read_jsonl(path)
+    rows += [{"ts": e.ts, "level": e.level, "symbol": e.symbol, "message": e.message}
+             for e in events if e.level in ("order", "warn", "error")]
+    rows = rows[-keep:]
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    os.replace(tmp, path)
 
 
 def _pending(engine) -> bool:
@@ -131,7 +170,13 @@ def run(mode: str, force: bool = False, push: bool = True, now: dt.datetime | No
             except ValueError as e:
                 log.info("Report noch nicht möglich: %s", e)
         runs = read_jsonl(data_path(settings, "runs.jsonl"), limit=29)
+        for warning in resource_warnings(settings.data_dir):
+            notifier.send("QuantDesk: Server-Ressourcen", warning, "error")
+            run_row["errors"].append(warning)
+        events_path = data_path(settings, "events.jsonl")
+        append_events(events_path, events)
         status = build_status(engine, settings, fills, net_liq, report, runs)
+        status["events"] = read_jsonl(events_path, limit=60)
         spy = services.marketdata.get_quote("SPY")
         acc = status["c_account"]
         write_snapshot(data_path(settings, "snapshots.jsonl"), {
@@ -141,7 +186,7 @@ def run(mode: str, force: bool = False, push: bool = True, now: dt.datetime | No
         })
         run_row.update(
             ok=bool(authed),
-            errors=[e.message for e in events if e.level == "error"][:20],
+            errors=(run_row["errors"] + [e.message for e in events if e.level == "error"])[:20],
             fills=sum(1 for e in events if e.level == "order" and ("gefüllt" in e.message or "nachgebucht" in e.message)),
             orders=sum(1 for e in events if e.level == "order" and "platziert" in e.message),
         )
@@ -151,11 +196,15 @@ def run(mode: str, force: bool = False, push: bool = True, now: dt.datetime | No
         if mode == "trade" or run_row["fills"] or run_row["errors"]:
             notifier.send(title, text, "error" if run_row["errors"] else "info")
         print(text)
+        if mode == "trade":
+            ping("success" if authed else "fail", text)
         return 0 if authed else 1
     except Exception as e:  # nie still sterben: Fehler melden, sauber beenden
         run_row["errors"].append(f"{type(e).__name__}: {e}")
         log.error("Lauf fehlgeschlagen:\n%s", traceback.format_exc())
         notifier.send("QuantDesk: Lauf fehlgeschlagen", f"{type(e).__name__}: {e}", "error")
+        if mode == "trade":
+            ping("fail", f"{type(e).__name__}: {e}")
         return 1
     finally:
         run_row["duration"] = round(time.time() - started, 1)

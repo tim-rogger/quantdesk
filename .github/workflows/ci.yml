@@ -27,5 +27,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Secret-Scan (bricht ab, wenn ein Passwort/Token im Repo steht)
+        run: pytest -q tests/test_ops.py::test_no_secrets_in_tracked_files
+
       - name: Run tests
         run: pytest

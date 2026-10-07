@@ -1,4 +1,4 @@
-# QuantDesk auf dem Server: IB Gateway (Paper) + Bot (Tageslauf) + Dashboard (PWA) + ntfy (Push).
+# QuantDesk auf dem Server: IB Gateway (Paper) + Bot (Tageslauf + Backup) + Dashboard (PWA) + ntfy (Push).
 # Start:  cd deploy && docker compose up -d --build
 # Kein Dienst ist öffentlich erreichbar: Dashboard und ntfy hören nur auf 127.0.0.1 und werden über
 # `tailscale serve` ins private Tailscale-Netz gebracht. IB Gateway hat gar keinen Port nach aussen.
@@ -18,10 +18,22 @@ x-quantdesk-env: &quantdesk-env
   QUANTDESK_CACHE_DIR: /state/cache
   NTFY_URL: http://ntfy:80
 
+# für alle Dienste: keine Rechteausweitung, Logs rotieren (max. 3 × 10 MB pro Container)
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   ib-gateway:
+    <<: *hardening
     image: ghcr.io/gnzsnz/ib-gateway:stable
-    restart: unless-stopped
+    mem_limit: 1536m
     environment:
       TWS_USERID: ${TWS_USERID}
       TWS_PASSWORD_FILE: /run/secrets/tws_password
@@ -43,9 +55,13 @@ services:
       - ./state/tws_settings:/home/ibgateway/tws_settings
 
   ntfy:
-    image: binwiederhier/ntfy:latest
+    <<: *hardening
+    image: binwiederhier/ntfy:v2.28.0  # feste Version; Update bewusst: Version hier ändern, dann `docker compose up -d`
     command: serve
-    restart: unless-stopped
+    mem_limit: 128m
+    read_only: true
+    tmpfs:
+      - /tmp
     environment:
       NTFY_BASE_URL: ${NTFY_PUBLIC_URL}
       NTFY_AUTH_FILE: /var/lib/ntfy/user.db
@@ -59,25 +75,43 @@ services:
       - "127.0.0.1:8090:80"
 
   bot:
+    <<: *hardening
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     image: quantdesk:latest
-    restart: unless-stopped
     command: ["python", "scheduler.py"]
+    mem_limit: 512m
+    read_only: true
+    tmpfs:
+      - /tmp
     env_file: .env
-    environment: *quantdesk-env
+    environment:
+      <<: *quantdesk-env
+      # Backup (restic -> Backblaze B2), läuft nach dem 15:30-Abgleich
+      RESTIC_PASSWORD_FILE: /run/secrets/restic_password
+      B2_ACCOUNT_KEY_FILE: /run/secrets/b2_account_key
+      RESTIC_CACHE_DIR: /tmp/restic-cache
+      BACKUP_PATHS: /state:/backup/ntfy
+    secrets:
+      - restic_password
+      - b2_account_key
     volumes:
       - ./state:/state
+      - ./ntfy-data:/backup/ntfy:ro    # nur lesend, fürs Backup
     depends_on:
       - ib-gateway
       - ntfy
 
   dashboard:
+    <<: *hardening
     image: quantdesk:latest
-    restart: unless-stopped
     command: ["uvicorn", "dashboard.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000",
               "--proxy-headers", "--forwarded-allow-ips", "*"]
+    mem_limit: 256m
+    read_only: true
+    tmpfs:
+      - /tmp
     env_file: .env
     environment: *quantdesk-env
     volumes:
@@ -90,3 +124,7 @@ services:
 secrets:
   tws_password:
     file: ./secrets/tws_password.txt
+  restic_password:
+    file: ./secrets/restic_password.txt
+  b2_account_key:
+    file: ./secrets/b2_account_key.txt

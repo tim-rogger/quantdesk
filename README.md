@@ -270,7 +270,12 @@ Schritt steht in **[deploy/SERVER.md](deploy/SERVER.md)**.
 | `dashboard` | eigene Web-App (PWA, aufs Handy installierbar): Kapitalkurve C vs. SPY vs. SPY/Cash-Mischung, Positionen, F1–F5, letzte Läufe, **STOP-ALL mit PIN** |
 | `ntfy` | Push aufs Handy: Tageszusammenfassung, jede Ausführung, jeder Fehler |
 
-Erreichbar nur über **Tailscale** (privates Netz zwischen Server, Laptop und Handy). Öffentlich ist nur SSH mit Schlüssel offen.
+Erreichbar nur über **Tailscale** (privates Netz zwischen Server, Laptop und Handy), **auch SSH**. Von aussen ist kein
+Login-Port offen, nur der Tailscale-Tunnel (41641/udp). Notzugang ist die Web-Konsole des Anbieters (Contabo).
+
+Dazu: verschlüsselte **Backups** mit restic nach Backblaze B2 (täglich nach dem 15:30-Abgleich, 30 täglich / 12 monatlich,
+`deploy/restore.sh` für den Restore-Test), **Healthchecks.io** als Überwachung von aussen, `deploy/harden.sh` für die
+Server-Härtung und Container mit `no-new-privileges`, Speicherlimits, schreibgeschütztem Dateisystem und Log-Rotation.
 
 Der Server verbindet sich über die TWS-API (`QUANTDESK_BROKER=tws`, Bibliothek `ib_async`). Auf dem Laptop
 läuft die GUI weiter mit dem Client Portal (`QUANTDESK_BROKER=clientportal`). **Nie beides gleichzeitig mit demselben

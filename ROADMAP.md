@@ -125,7 +125,12 @@ verletzt: Es wurde nichts doppelt gehandelt, nur unvollständig gebucht. Der Vor
 ### Phase 3 – Vorwärtstest von C auf dem Paper-Konto (6 Monate) ⏳ läuft seit 29.09.2026
 - [x] Vorbereitung im DRY_RUN, Start im PAPER-Modus am 29.09.2026
 - [x] Fills früherer Sitzungen nachbuchen, Order-Register, nur eigene Aktien, `not_tradable`, WBD geschlossen
-- [ ] **Server-Betrieb** (`deploy/SERVER.md`): VPS bestellen, Tailscale, Docker, IB Gateway + IBC, Dashboard, ntfy
+- [ ] **Server-Betrieb** (`deploy/SERVER.md`, Plan „QuantDesk – IT-Infrastruktur-Plan“): Contabo Cloud VPS 6 (EU,
+      Ubuntu 24.04), Einrichtung über die Web-Konsole, **SSH nur über Tailscale** (Port 22 zu), `deploy/harden.sh`,
+      Docker, IB Gateway + IBC, Dashboard, ntfy
+- [ ] Backups: restic → Backblaze B2, verschlüsselt, täglich nach dem 15:30-Abgleich (30 täglich / 12 monatlich);
+      Restore-Test einmal pro Quartal (`deploy/restore.sh`)
+- [ ] Überwachung von aussen: Healthchecks.io (Ping nach jedem Handelslauf, Alarm wenn bis 11:00 New York keiner kam)
 - [ ] Ab Server-Start: Tageslauf an jedem NYSE-Handelstag 10:00 (Handel) und 15:30 (Abgleich) New York, Push nach jedem Lauf
 - [ ] Monatlich `forward_test.py report` (bzw. im Dashboard: F1–F5)
 - [ ] Nach 126 Handelstagen: Urteil nach F1–F5 (Vorfälle oben beim Urteil erwähnen)

@@ -131,6 +131,17 @@ function render(data) {
   $("excluded").textContent = [nt.length ? `Ohne Handelsberechtigung: ${nt.join(", ")}` : "", closed.length ? `Geschlossen: ${closed.join(", ")}` : ""]
     .filter(Boolean).join(" · ");
 
+  const ev = $("events"); ev.innerHTML = "";
+  const events = (data.events || []).slice().reverse().slice(0, 40);
+  if (!events.length) ev.appendChild(el("li", { class: "muted" }, "Noch keine Ereignisse."));
+  events.forEach((e) => {
+    const li = el("li");
+    const cls = e.level === "error" ? "bad" : e.level === "warn" ? "muted" : "ok";
+    li.appendChild(el("span", { class: cls }, e.level === "error" ? "●" : e.level === "warn" ? "▲" : "●"));
+    li.appendChild(el("span", {}, `${new Date(e.ts * 1000).toLocaleString("de-CH", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} · ${e.message}`));
+    ev.appendChild(li);
+  });
+
   const ul = $("runs"); ul.innerHTML = "";
   runs.slice(0, 10).forEach((r) => {
     const li = el("li");

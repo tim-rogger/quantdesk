@@ -6,6 +6,9 @@ ENV PYTHONUNBUFFERED=1 \
     TZ=America/New_York
 
 WORKDIR /app
+# restic für die verschlüsselten Backups nach Backblaze B2 (signiertes Debian-Paket)
+RUN apt-get update && apt-get install -y --no-install-recommends restic ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
