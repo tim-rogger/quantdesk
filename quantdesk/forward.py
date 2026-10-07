@@ -48,7 +48,7 @@ def setup_systems(data_file: str, symbols: list[str], order_usd: float = DEFAULT
 
 def c_systems(data_file: str) -> list[EquitySystem]:
     return [s for s in storage.load(data_file).values()
-            if s.trend_sma == C_PARAMS.trend_sma and s.trend_exit and s.order_usd]
+            if s.trend_sma == C_PARAMS.trend_sma and s.trend_exit and s.order_usd and not s.not_tradable]
 
 
 # --------------------------------------------------------------------------- Kapitalkurven
@@ -135,6 +135,7 @@ class ForwardReport:
     monthly: dict[str, list[float]]  # Name -> Monatsrenditen (USD)
     checks: list[Check]
     estimated_fills: int = 0  # Fills mit geschätztem Tag (Ausführung bei IBKR nicht mehr abrufbar)
+    curves: dict | None = None  # Name -> {"days": [...], "values": [... normiert auf 1.0]}
 
     @property
     def passed(self) -> bool:
@@ -215,4 +216,35 @@ def build_report(
         Check("F5", "keine technischen Fehler", not problems, "; ".join(problems) or "keine gefunden"),
     ]
     estimated = sum(1 for f in fills if getattr(f, "estimated", False))
-    return ForwardReport(start, end, len(days), months_done, finished, rows, monthly, checks, estimated)
+    normed = {name: {"days": c.days, "values": [v / c.values[0] for v in c.values]} for name, c in curves.items()}
+    return ForwardReport(start, end, len(days), months_done, finished, rows, monthly, checks, estimated, normed)
+
+
+def load_report(data_file: str, journal, loader=None, include_simulated: bool = False, fee: float = 1.0,
+                start: str | None = None) -> tuple[ForwardReport, list[str]]:
+    """Report mit frischen Kursdaten bauen. Liefert (Report, Symbole ohne Kursdaten). ValueError, wenn nicht möglich."""
+    import requests
+
+    from quantdesk.history import load_history
+    from quantdesk.walkforward import FX_SYMBOL, RATE_SYMBOL
+
+    loader = loader or load_history
+    systems = c_systems(data_file)
+    if not systems:
+        raise ValueError("Keine C-Systeme in equities.json – zuerst: python forward_test.py setup")
+    order_usd = systems[0].order_usd or DEFAULT_ORDER_USD
+    symbols = {s.symbol for s in systems}
+    bars, missing = {}, []
+    for sym in sorted(symbols):
+        try:
+            bars[sym] = loader(sym, 2)
+        except (requests.RequestException, ValueError):
+            missing.append(sym)
+    # Budget nur für Symbole mit Kursdaten – genau wie im Backtest desselben Zeitraums
+    budget = len(bars) * (C_PARAMS.levels + 1) * order_usd
+    fills = [f for f in journal.read(include_simulated=include_simulated) if f.symbol in bars]
+    try:
+        spy, rate, fx = loader("SPY", 2), loader(RATE_SYMBOL, 2), loader(FX_SYMBOL, 2)
+    except (requests.RequestException, ValueError) as e:
+        raise ValueError(f"Vergleichsdaten nicht ladbar: {e}") from e
+    return build_report(fills, bars, spy, Market.from_bars(rate, fx), budget, order_usd, fee, start), missing

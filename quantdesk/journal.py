@@ -20,6 +20,8 @@ class Fill:
     order_id: str
     simulated: bool = False
     estimated: bool = False  # Tag/Preis geschätzt (Ausführung bei IBKR nicht mehr abrufbar)
+    exec_ids: tuple = ()  # IBKR-Ausführungs-IDs, aus denen der Eintrag entstand
+    note: str = ""
 
 
 class Journal:
@@ -39,11 +41,13 @@ class Journal:
         simulated: bool,
         when: float | None = None,
         estimated: bool = False,
+        exec_ids: tuple | list = (),
+        note: str = "",
     ) -> Fill:
         """`when` = Ausführungszeit (Unix-Sekunden); ohne Angabe: jetzt."""
         ts = self._clock() if when is None else when
         fill = Fill(ts, time.strftime("%Y-%m-%d", time.gmtime(ts)), symbol, side, float(qty), float(price),
-                    kind, str(order_id), simulated, estimated)
+                    kind, str(order_id), simulated, estimated, tuple(exec_ids), note)
         with self._lock:
             with open(self.path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(asdict(fill)) + "\n")
@@ -59,7 +63,9 @@ class Journal:
         with open(self.path, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    fill = Fill(**json.loads(line))
+                    d = json.loads(line)
+                    d["exec_ids"] = tuple(d.get("exec_ids") or ())
+                    fill = Fill(**d)
                     if include_simulated or not fill.simulated:
                         out.append(fill)
         return out

@@ -16,10 +16,11 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from quantdesk import storage
-from quantdesk.broker.base import LOGIN_HINT, Broker, BrokerError, Order, Position
+from quantdesk.broker.base import LOGIN_HINT, Broker, BrokerError, NotTradableError, Order, Position
 from quantdesk.executions import ExecutionArchive, OrderFill, aggregate
 from quantdesk.history import Bar
 from quantdesk.journal import Journal
+from quantdesk.registry import ENTRY, EXIT, LEVEL, BotOrder, OrderRegistry
 from quantdesk.marketdata import MarketData, Quote
 from quantdesk.storage import StorageError
 from quantdesk.strategy import (
@@ -31,7 +32,6 @@ from quantdesk.strategy import (
     PLACED,
     EquitySystem,
     ValidationError,
-    find_level_order,
 )
 
 log = logging.getLogger(__name__)
@@ -63,6 +63,8 @@ class Engine:
         journal: Journal | None = None,
         executions: ExecutionArchive | None = None,
         bars: Callable[[str], list[Bar]] | None = None,
+        registry: OrderRegistry | None = None,
+        infer_missing: bool = False,
     ):
         self.broker = broker
         self.marketdata = marketdata
@@ -75,6 +77,9 @@ class Engine:
         self.journal = journal
         self.executions = executions  # Archiv aller IBKR-Ausführungen (IBKR selbst liefert nur 7 Tage)
         self.bars = bars  # Tageskurse, um den Tag geschätzter Fills zu bestimmen
+        self.registry = registry  # alle Orders, die der Bot selbst platziert hat
+        self.infer_missing = infer_missing  # nur für die einmalige Migration
+        self._booked: set[str] = set()
         self._last_exec_fetch: float | None = None
         self._fills: dict[str, OrderFill] = {}
         self._lock = threading.RLock()
@@ -95,6 +100,11 @@ class Engine:
             self._emit("error", str(e))
         self._drop_simulated_state()
         self._migrate_from_journal()
+        if self.journal is not None:
+            try:
+                self._booked = self.journal.order_ids()
+            except (OSError, ValueError) as e:
+                self._emit("error", f"Journal nicht lesbar: {e}")
         self._publish()
 
     # ------------------------------------------------------------ Hilfen
@@ -138,6 +148,9 @@ class Engine:
                         "open_orders": len(s.open_order_ids()),
                         "trend_label": s.trend_label,
                         "exit_pending": s.exit_order_id is not None,
+                        "bot_qty": s.bot_qty(),
+                        "not_tradable": s.not_tradable,
+                        "closed": s.closed,
                         "last_price": q.price if q else None,
                         "price_source": q.source if q else None,
                     }
@@ -280,12 +293,13 @@ class Engine:
             self._shutdown.wait(self.interval_seconds)
 
     # --------------------------------------------------------- eine Runde
-    def run_once(self) -> None:
+    def run_once(self, decide: bool = True) -> None:
+        """Eine Runde. decide=False: nur abgleichen und buchen, keine neuen Orders, keine Stornos, keine Verkäufe."""
         self._keepalive()
         authed = self._check_auth()
         with self._lock:
             symbols = list(self.systems)
-            active = [s.symbol for s in self.systems.values() if s.is_on]
+            active = [s.symbol for s in self.systems.values() if s.is_on and s.tradable]
         self._refresh_quotes(symbols)
         if authed:
             self._refresh_cash()
@@ -303,16 +317,17 @@ class Engine:
         self._clear("read")
         trend_states = self._trend_states(active)
         fills = self._order_fills(orders)
-        self._book_orphans(fills)
+        self._book_registry_fills(fills)
+        by_id = {o.order_id: o for o in orders}
         for sym in active:
             if self.paused:
                 break
             with self._lock:
                 system = self.systems.get(sym)
-                if system is None or not system.is_on:
+                if system is None or not system.is_on or not system.tradable:
                     continue
                 try:
-                    self._trade_system(system, positions.get(sym), orders, trend_states.get(sym, True), fills)
+                    self._trade_system(system, positions.get(sym), by_id, trend_states.get(sym, True), fills, decide)
                     self._clear(f"trade:{sym}")
                 except BrokerError as e:
                     self._emit("error", f"{sym}: {e}", sym, key=f"trade:{sym}")
@@ -357,31 +372,6 @@ class Engine:
             self._fills = aggregate(archive)
         return self._fills
 
-    def _book_orphans(self, fills: dict[str, OrderFill]) -> None:
-        """Ausführungen in Symbolen des Bots, die zu keiner verfolgten Order passen und noch nicht im Journal
-        stehen (z.B. ein Level, das vor einem Verkauf gefüllt wurde, als der Bot aus war) – nachbuchen."""
-        if self.journal is None or not fills:
-            return
-        try:
-            journal = self.journal.read(include_simulated=True)
-        except (OSError, ValueError):
-            return
-        if not journal:
-            return  # Vorwärtstest hat noch nicht begonnen
-        start, booked = min(f.ts for f in journal), {f.order_id for f in journal}
-        with self._lock:
-            systems = {sym: s for sym, s in self.systems.items() if s.is_on and s.order_usd}
-            tracked = {oid for s in systems.values() for oid in s.open_order_ids()}
-            for f in sorted(fills.values(), key=lambda x: x.ts):
-                s = systems.get(f.symbol)
-                if s is None or f.order_id in booked or f.order_id in tracked or f.ts < start - 86400:
-                    continue
-                kind = "level" if f.side == "BUY" else "exit"
-                self._record(s, f.side, f.qty, f.price, kind, None, f.order_id, when=f.ts)
-                booked.add(f.order_id)
-                self._emit("warn", f"{f.symbol}: Ausführung {f.side} {f.qty:g} @ {f.price:.2f} vom "
-                                   f"{time.strftime('%d.%m.', time.gmtime(f.ts))} nachgebucht (Order {f.order_id}).", f.symbol)
-
     def _qty(self, s: EquitySystem, price: float | None) -> int | None:
         """Stückzahl: fester Dollarbetrag wie im Backtest (gerundet, mind. 1) oder feste Stückzahl."""
         if s.order_usd is None:
@@ -391,12 +381,13 @@ class Engine:
         return max(1, round(s.order_usd / price))
 
     def _record(self, s: EquitySystem, side: str, qty: float, price: float, kind: str, order: Order | None,
-                order_id: str, when: float | None = None, estimated: bool = False) -> None:
+                order_id: str, when: float | None = None, estimated: bool = False, exec_ids=(), note: str = "") -> None:
         if self.journal is None:
             return
         try:
             simulated = s.simulated or (order.simulated if order else False) or str(order_id).startswith("DRY-")
-            self.journal.record(s.symbol, side, qty, price, kind, order_id, simulated, when=when, estimated=estimated)
+            self.journal.record(s.symbol, side, qty, price, kind, order_id, simulated, when=when, estimated=estimated,
+                                exec_ids=exec_ids, note=note)
         except OSError as e:
             self._emit("error", f"Journal nicht schreibbar: {e}", key="journal")
 
@@ -445,80 +436,169 @@ class Engine:
                 self._emit("warn", f"{sym}: kein Preis (weder IBKR noch Stooq/Yahoo).", sym, key=f"quote:{sym}")
 
     # ----------------------------------------------------------- Strategie
-    def _trade_system(self, s: EquitySystem, pos: Position | None, orders: list[Order],
-                      trend_ok: bool | None = True, fills: dict[str, OrderFill] | None = None) -> None:
-        s.position = pos.qty if pos else 0.0
+    def _trade_system(self, s: EquitySystem, pos: Position | None, by_id: dict[str, Order],
+                      trend_ok: bool | None = True, fills: dict[str, OrderFill] | None = None,
+                      decide: bool = True) -> None:
+        """Eine Runde für ein System. Zuerst IMMER die eigenen Orders abgleichen, dann (nur wenn `decide`)
+        handeln: Trend-Verkauf, Einstieg, Levels. Fremde Bestände und fremde Orders werden nie angefasst."""
         fills = fills or {}
-        listed = {o.order_id for o in orders}
-        # 1) Fills von Orders nachbuchen, die IBKR nicht mehr listet (Bot war aus, neue Sitzung) – IMMER zuerst
-        self._reconcile_levels(s, listed, fills)
-        self._infer_missing_fills(s, pos, listed, fills)
+        broker_qty = pos.qty if pos else 0.0
+        s.position = broker_qty
+        self._sync_entry(s, by_id, fills)
+        self._sync_levels(s, by_id, fills)
+        if self.infer_missing:
+            self._infer_missing_fills(s, pos, set(by_id), fills)
         if s.exit_order_id:
-            self._handle_exit_pending(s, pos, orders, fills)
-            return
-        if s.entry_price is not None and (pos is None or pos.qty <= 0) and s.exit_order_id is None and (
-                s.entry_qty or any(lv.status == FILLED for lv in s.levels)):
-            self._emit("warn", f"{s.symbol}: Position bei IBKR verschwunden, ohne Verkauf durch den Bot – Firmenereignis "
-                               "(Übernahme, Delisting)? Bitte im IBKR-Portal prüfen.", s.symbol, key=f"gone:{s.symbol}")
+            self._sync_exit(s, by_id, fills, broker_qty)
+            if s.exit_order_id:
+                return
+        self._plausibility(s, broker_qty)
+        if not decide or self.paused:
             return
         ok = True if s.trend_sma is None else trend_ok
         if s.trend_exit and ok is False:
-            self._trend_exit(s, pos, orders)
+            self._trend_exit(s, by_id, broker_qty)
             return
         allow_new = ok is True  # neue Käufe nur bei bekanntem Aufwärtstrend (wie im Backtest)
         if s.entry_price is None:
-            self._handle_entry(s, pos, orders, allow_new, fills)
-            if s.entry_price is None:
-                return
-        s.ensure_levels()
-        for lv in s.levels:
-            if lv.status == PLACED:
-                order = find_level_order(lv, s.symbol, orders)
-                if order is None:
-                    continue
-                if order.is_filled:
-                    lv.status, lv.qty = FILLED, order.qty
-                    self._record(s, "BUY", order.qty, order.avg_fill_price or lv.price, "level", order, order.order_id)
-                    self._emit("order", f"{s.symbol}: Level {lv.level} @ {lv.price:.2f} gefüllt.", s.symbol)
-                elif order.is_cancelled:
-                    lv.status = CANCELLED
-                    self._emit("warn", f"{s.symbol}: Level {lv.level} wurde storniert ({order.status}) – wird nicht neu platziert.", s.symbol)
-                elif lv.order_id is None:
-                    lv.order_id = order.order_id
-            elif lv.status == PENDING:
-                if self.paused or not allow_new:
-                    return
-                existing = find_level_order(lv, s.symbol, orders)
-                if existing is not None and existing.is_open:
-                    lv.status, lv.order_id = PLACED, existing.order_id
-                    self._emit("info", f"{s.symbol}: offene Order {existing.order_id} für Level {lv.level} übernommen.", s.symbol)
-                    continue
-                qty = self._qty(s, lv.price)
-                result = self.broker.place_limit_order(s.symbol, "BUY", qty, lv.price)
-                lv.status, lv.order_id = PLACED, result.order_id
-                s.simulated = s.simulated or result.order_id.startswith("DRY-")
-                self._emit(
-                    "order",
-                    f"{s.symbol}: Limit-Buy {qty} @ {lv.price:.2f} (Level {lv.level}) platziert – ID {result.order_id}.",
-                    s.symbol,
-                )
+            if s.entry_order_id is None and allow_new:
+                self._open_entry(s)
+            return
+        if allow_new:
+            self._place_levels(s)
 
-    def _reconcile_levels(self, s: EquitySystem, listed: set[str], fills: dict[str, OrderFill]) -> None:
+    # --- Abgleich -------------------------------------------------------
+    def _done(self, order_id: str, by_id: dict[str, Order], fills: dict[str, OrderFill]):
+        """Zustand einer eigenen Order: ('open'|'filled'|'cancelled'|'unknown', Menge, Preis, Zeit)."""
+        o, f = by_id.get(order_id), fills.get(order_id)
+        if o is not None:
+            if o.is_filled:
+                return ("filled", o.filled_qty or o.qty, o.avg_fill_price or (f.price if f else None),
+                        o.filled_at or (f.ts if f else None))
+            if o.is_cancelled:
+                if f is not None:  # teilweise ausgeführt, Rest storniert
+                    return "filled", f.qty, f.price, f.ts
+                if o.filled_qty:
+                    return "filled", o.filled_qty, o.avg_fill_price, o.filled_at
+                return "cancelled", 0.0, None, None
+            return "open", 0.0, None, None
+        if f is not None:
+            reg = self.registry.get(order_id) if self.registry is not None else None
+            if reg is None or f.qty >= reg.qty - 1e-9:
+                return "filled", f.qty, f.price, f.ts
+            return "open", 0.0, None, None  # erst teilweise ausgeführt
+        return "unknown", 0.0, None, None
+
+    def _fill_price(self, s: EquitySystem, price: float | None, fallback: float | None) -> tuple[float, bool]:
+        """(Preis, geschätzt?) – ohne gemeldeten Preis: Limitpreis bzw. letzter Kurs."""
+        if price:
+            return float(price), False
+        quote = self.quotes.get(s.symbol)
+        return float(fallback or (quote.price if quote else 0.0)), True
+
+    def _sync_entry(self, s: EquitySystem, by_id: dict[str, Order], fills: dict[str, OrderFill]) -> None:
+        if s.entry_price is not None or not s.entry_order_id:
+            return
+        state, qty, price, ts = self._done(s.entry_order_id, by_id, fills)
+        if state == "filled":
+            price, estimated = self._fill_price(s, price, None)
+            s.entry_price, s.entry_qty, s.entry_ts = round(price, 2), qty, ts or self._clock()
+            self._book(s, "BUY", qty, price, "entry", s.entry_order_id, ts, estimated, fills)
+            self._emit("order", f"{s.symbol}: Einstieg gefüllt ({qty:g} @ {price:.2f}), Einstiegspreis {s.entry_price:.2f}.",
+                       s.symbol)
+            s.entry_order_id = s.entry_order_time = None
+        elif state == "cancelled":
+            self._emit("warn", f"{s.symbol}: Einstiegs-Order {s.entry_order_id} storniert – neuer Versuch beim nächsten Lauf.",
+                       s.symbol)
+            s.entry_order_id = s.entry_order_time = None
+        elif state == "unknown" and self._clock() - (s.entry_order_time or 0) > ENTRY_ORDER_TIMEOUT:
+            self._emit("warn", f"{s.symbol}: Einstiegs-Order {s.entry_order_id} weder offen noch ausgeführt auffindbar – "
+                               "neuer Versuch beim nächsten Lauf.", s.symbol)
+            s.entry_order_id = s.entry_order_time = None
+
+    def _sync_levels(self, s: EquitySystem, by_id: dict[str, Order], fills: dict[str, OrderFill]) -> None:
         for lv in s.levels:
-            if lv.status != PLACED or not lv.order_id or lv.order_id in listed:
+            if lv.status != PLACED or not lv.order_id:
                 continue
-            f = fills.get(lv.order_id)
-            if f is None or f.side != "BUY":
-                continue
-            lv.status, lv.qty = FILLED, f.qty
-            self._record(s, "BUY", f.qty, f.price, "level", None, lv.order_id, when=f.ts)
-            self._emit("order", f"{s.symbol}: Level {lv.level} wurde am {time.strftime('%d.%m.', time.gmtime(f.ts))} "
-                                f"gefüllt ({f.qty:g} @ {f.price:.2f}) – nachgebucht.", s.symbol)
+            state, qty, price, ts = self._done(lv.order_id, by_id, fills)
+            if state == "filled":
+                price, estimated = self._fill_price(s, price, lv.price)
+                lv.status, lv.qty = FILLED, qty
+                self._book(s, "BUY", qty, price, "level", lv.order_id, ts, estimated, fills)
+                when = time.strftime("%d.%m.", time.gmtime(ts)) if ts else "heute"
+                self._emit("order", f"{s.symbol}: Level {lv.level} gefüllt am {when} ({qty:g} @ {price:.2f}).", s.symbol)
+            elif state == "cancelled":
+                lv.status = CANCELLED
+                self._emit("warn", f"{s.symbol}: Level {lv.level} wurde storniert – wird nicht neu platziert.", s.symbol)
+
+    def _sync_exit(self, s: EquitySystem, by_id: dict[str, Order], fills: dict[str, OrderFill], broker_qty: float) -> None:
+        state, qty, price, ts = self._done(s.exit_order_id, by_id, fills)
+        if state == "filled":
+            price, estimated = self._fill_price(s, price, None)
+            self._book(s, "SELL", qty, price, "exit", s.exit_order_id, ts, estimated, fills)
+            s.sold_qty += qty
+            s.exit_order_id = s.exit_order_time = None
+            if s.bot_qty() <= 0.5:
+                simulated = s.simulated
+                s.reset_trading_state()
+                s.simulated = simulated
+                self._emit("order", f"{s.symbol}: Verkauf gefüllt ({qty:g} @ {price:.2f}) – neuer Zyklus bei Aufwärtstrend.",
+                           s.symbol)
+            else:
+                self._emit("warn", f"{s.symbol}: Teilverkauf {qty:g} @ {price:.2f}, {s.bot_qty():g} eigene Stück offen – "
+                                   "Rest beim nächsten Lauf.", s.symbol)
+        elif state == "cancelled":
+            self._emit("warn", f"{s.symbol}: Verkaufs-Order {s.exit_order_id} storniert – neuer Versuch beim nächsten Lauf.",
+                       s.symbol)
+            s.exit_order_id = s.exit_order_time = None
+        elif state == "unknown" and self._clock() - (s.exit_order_time or 0) > ENTRY_ORDER_TIMEOUT:
+            self._emit("error", f"{s.symbol}: Verkaufs-Order {s.exit_order_id} nicht bestätigbar (Broker hält {broker_qty:g}) – "
+                                "bitte im IBKR-Portal prüfen.", s.symbol, key=f"exit:{s.symbol}")
+
+    def _plausibility(self, s: EquitySystem, broker_qty: float) -> None:
+        """Eigene Fills vs. Broker-Bestand. Fremde Stück sind erlaubt, fehlende eigene Stück sind ein Alarm."""
+        own = s.bot_qty()
+        if own - broker_qty > 0.5:
+            self._emit("error", f"{s.symbol}: Konto hält {broker_qty:g} Stück, eigene Fills ergeben {own:g} – Abweichung "
+                                "(Firmenereignis? manueller Verkauf?). Bitte prüfen.", s.symbol, key=f"plaus:{s.symbol}")
+        elif broker_qty - own > 0.5:
+            self._emit("info", f"{s.symbol}: {broker_qty - own:g} fremde Stück im Konto – der Bot fasst sie nicht an.",
+                       s.symbol, key=f"plaus:{s.symbol}")
+        else:
+            self._clear(f"plaus:{s.symbol}")
+
+    def _book(self, s: EquitySystem, side: str, qty: float, price: float, kind: str, order_id: str,
+              when: float | None, estimated: bool, fills: dict[str, OrderFill], note: str = "") -> bool:
+        """Journal-Eintrag genau einmal pro Order (idempotent)."""
+        if order_id in self._booked:
+            return False
+        f = fills.get(order_id)
+        self._record(s, side, qty, price, kind, None, order_id, when=when, estimated=estimated,
+                     exec_ids=f.exec_ids if f else (), note=note)
+        self._booked.add(order_id)
+        return True
+
+    def _book_registry_fills(self, fills: dict[str, OrderFill]) -> None:
+        """Ausführungen eigener Orders, die kein System mehr verfolgt (z.B. Level gefüllt, als der Bot aus war,
+        danach Verkauf) – nachbuchen. Ausführungen fremder Orders werden nie gebucht."""
+        if self.registry is None or not fills:
+            return
+        registry = self.registry.all()
+        with self._lock:
+            tracked = {oid for s in self.systems.values() for oid in s.open_order_ids()}
+            for f in sorted(fills.values(), key=lambda x: x.ts):
+                reg = registry.get(f.order_id)
+                s = self.systems.get(f.symbol)
+                if reg is None or s is None or f.order_id in self._booked or f.order_id in tracked:
+                    continue
+                self._book(s, f.side, f.qty, f.price, reg.kind, f.order_id, f.ts, False, fills)
+                self._emit("warn", f"{f.symbol}: Ausführung {f.side} {f.qty:g} @ {f.price:.2f} vom "
+                                   f"{time.strftime('%d.%m.', time.gmtime(f.ts))} nachgebucht (Order {f.order_id}).", f.symbol)
 
     def _infer_missing_fills(self, s: EquitySystem, pos: Position | None, listed: set[str],
                              fills: dict[str, OrderFill]) -> None:
-        """Rückfallebene: Position grösser als die eigene Buchführung, Ausführung bei IBKR nicht mehr abrufbar
-        (älter als 7 Tage) -> verschwundene Levels der Reihe nach als gefüllt buchen, Tag aus Tagestiefs geschätzt."""
+        """Nur für die einmalige Migration: eigene Levels, deren Ausführung bei IBKR nicht mehr abrufbar ist
+        (> 7 Tage), aus der Position ableiten. Tag aus Tagestiefs geschätzt, im Journal als geschätzt markiert."""
         accounted = s.accounted_qty()
         if accounted is None or pos is None or s.exit_order_id:
             return
@@ -528,19 +608,17 @@ class Engine:
         for lv in sorted(s.levels, key=lambda x: x.level):
             if lv.status != PLACED or not lv.order_id or lv.order_id in listed or lv.order_id in fills:
                 continue
-            expected = self._qty(s, lv.price)
+            reg = self.registry.get(lv.order_id) if self.registry is not None else None
+            expected = reg.qty if reg is not None else self._qty(s, lv.price)
             if expected is None or expected > excess + 1e-9:
                 break
             lv.status, lv.qty = FILLED, float(expected)
             excess -= expected
             when = self._estimate_fill_ts(s, lv.price)
-            self._record(s, "BUY", expected, lv.price, "level", None, lv.order_id, when=when, estimated=True)
-            self._emit("warn", f"{s.symbol}: Level {lv.level} aus der Position abgeleitet ({expected} @ {lv.price:.2f}, "
-                               f"Tag geschätzt {time.strftime('%d.%m.', time.gmtime(when))}) – im Journal als geschätzt markiert.",
-                       s.symbol)
-        if excess >= 0.5:
-            self._emit("warn", f"{s.symbol}: Position hat {excess:g} Stück mehr als gebucht – nicht zuordenbar "
-                               "(manueller Kauf?).", s.symbol, key=f"excess:{s.symbol}")
+            self._book(s, "BUY", expected, lv.price, "level", lv.order_id, when, True, fills,
+                       note="aus Position abgeleitet, Ausführung bei IBKR nicht mehr abrufbar")
+            self._emit("warn", f"{s.symbol}: Level {lv.level} aus der Position abgeleitet ({expected:g} @ {lv.price:.2f}, "
+                               f"Tag geschätzt {time.strftime('%d.%m.', time.gmtime(when))}).", s.symbol)
 
     def _estimate_fill_ts(self, s: EquitySystem, price: float) -> float:
         """Erster Handelstag nach dem Einstieg, an dem das Tagestief den Limitpreis erreichte (17:00 UTC)."""
@@ -555,12 +633,56 @@ class Engine:
                     return float(calendar.timegm(time.strptime(b.day + " 17:00", "%Y-%m-%d %H:%M")))
         return self._clock()
 
-    def _trend_exit(self, s: EquitySystem, pos: Position | None, orders: list[Order]) -> None:
-        """Trend gebrochen: offene Orders stornieren, ganze Position per Market verkaufen (Backtest: Verkauf zum Open)."""
-        if self.paused:
+    # --- Handeln ---------------------------------------------------------
+    def _place(self, s: EquitySystem, kind: str, side: str, qty: int, price: float | None = None,
+               level: int | None = None) -> str | None:
+        """Order platzieren und im Register merken. None = keine Handelsberechtigung (System wird gesperrt)."""
+        try:
+            if price is None:
+                result = self.broker.place_market_order(s.symbol, side, qty)
+            else:
+                result = self.broker.place_limit_order(s.symbol, side, qty, price)
+        except NotTradableError as e:
+            s.not_tradable = True
+            self._emit("error", f"{s.symbol}: keine Handelsberechtigung – System wird nicht mehr gehandelt ({e}).", s.symbol)
+            return None
+        for msg in result.messages:
+            if msg != "DRY_RUN":
+                self._emit("warn", f"{s.symbol}: IBKR-Hinweis zu Order {result.order_id}: {msg}", s.symbol)
+        s.simulated = s.simulated or result.order_id.startswith("DRY-")
+        if self.registry is not None:
+            self.registry.add(BotOrder(result.order_id, s.symbol, kind, side.upper(), float(qty), level, price, self._clock()))
+        return result.order_id
+
+    def _open_entry(self, s: EquitySystem) -> None:
+        quote = self.quotes.get(s.symbol)
+        qty = self._qty(s, quote.price if quote else None)
+        if qty is None:
+            self._emit("warn", f"{s.symbol}: kein Preis für die Ordergrösse – Einstieg beim nächsten Lauf.", s.symbol,
+                       key=f"size:{s.symbol}")
             return
+        order_id = self._place(s, ENTRY, "BUY", qty)
+        if order_id:
+            s.entry_order_id, s.entry_order_time = order_id, self._clock()
+            self._emit("order", f"{s.symbol}: Einstieg Market-Buy {qty} platziert – ID {order_id}.", s.symbol)
+
+    def _place_levels(self, s: EquitySystem) -> None:
+        s.ensure_levels()
+        for lv in s.levels:
+            if lv.status != PENDING:
+                continue
+            qty = self._qty(s, lv.price)
+            order_id = self._place(s, LEVEL, "BUY", qty, lv.price, lv.level)
+            if order_id is None:
+                return
+            lv.status, lv.order_id = PLACED, order_id
+            self._emit("order", f"{s.symbol}: Limit-Buy {qty} @ {lv.price:.2f} (Level {lv.level}) platziert – ID {order_id}.",
+                       s.symbol)
+
+    def _trend_exit(self, s: EquitySystem, by_id: dict[str, Order], broker_qty: float) -> None:
+        """Trend gebrochen: eigene offene Orders stornieren, eigene Stück per Market verkaufen (Backtest: Verkauf zum Open).
+        Verkauft wird höchstens min(eigene Stück, Bestand beim Broker) – nie fremde Aktien."""
         had_state = s.entry_price is not None or s.entry_order_id is not None or bool(s.levels)
-        by_id = {o.order_id: o for o in orders}
         to_cancel = [lv.order_id for lv in s.levels if lv.status == PLACED and lv.order_id]
         if s.entry_order_id and s.entry_price is None:
             to_cancel.append(s.entry_order_id)
@@ -571,110 +693,23 @@ class Engine:
                     self.broker.cancel_order(order_id)
                     self._emit("order", f"{s.symbol}: Trend unter SMA{s.trend_sma} – Order {order_id} storniert.", s.symbol)
                 except BrokerError as e:
-                    self._emit("error", f"{s.symbol}: Storno von {order_id} fehlgeschlagen: {e}", s.symbol)
+                    self._emit("error", f"{s.symbol}: Storno von {order_id} fehlgeschlagen: {e} – bitte im Portal prüfen.",
+                               s.symbol)
         for lv in s.levels:
             if lv.status == PLACED:
                 lv.status = CANCELLED
-        qty = int(round(pos.qty)) if pos is not None and pos.qty > 0 else 0
+        s.entry_order_id = s.entry_order_time = None if s.entry_price is None else s.entry_order_id
+        qty = int(min(s.bot_qty(), max(broker_qty, 0.0)))
         if qty > 0:
-            result = self.broker.place_market_order(s.symbol, "SELL", qty)
-            s.exit_order_id, s.exit_order_time = result.order_id, self._clock()
-            s.simulated = s.simulated or result.order_id.startswith("DRY-")
-            self._emit("order", f"{s.symbol}: Trend unter SMA{s.trend_sma} – Market-Sell {qty} platziert – ID {result.order_id}.",
-                       s.symbol)
-        elif had_state:
-            s.reset_trading_state()
-            self._emit("info", f"{s.symbol}: Trend unter SMA{s.trend_sma} – keine Position, warte auf Aufwärtstrend.", s.symbol)
-
-    def _handle_exit_pending(self, s: EquitySystem, pos: Position | None, orders: list[Order],
-                             fills: dict[str, OrderFill] | None = None) -> None:
-        order = next((o for o in orders if o.order_id == s.exit_order_id), None)
-        f = (fills or {}).get(s.exit_order_id)
-        if order is None and f is not None and f.side == "SELL":
-            self._record(s, "SELL", f.qty, f.price, "exit", None, f.order_id, when=f.ts)
-            self._emit("order", f"{s.symbol}: Verkauf vom {time.strftime('%d.%m.', time.gmtime(f.ts))} nachgebucht "
-                                f"({f.qty:g} @ {f.price:.2f}) – neuer Zyklus bei Aufwärtstrend.", s.symbol)
-            simulated = s.simulated
-            s.reset_trading_state()
-            s.simulated = simulated
-            return
-        if order is not None and order.is_filled:
-            quote = self.quotes.get(s.symbol)
-            price = order.avg_fill_price or (quote.price if quote else 0.0)
-            self._record(s, "SELL", order.qty, price, "exit", order, order.order_id)
-            self._emit("order", f"{s.symbol}: Verkauf gefüllt ({order.qty:g} @ {price:.2f}) – neuer Zyklus bei Aufwärtstrend.",
-                       s.symbol)
-            simulated = s.simulated
-            s.reset_trading_state()
-            s.simulated = simulated
-        elif order is not None and order.is_cancelled:
-            self._emit("warn", f"{s.symbol}: Verkaufs-Order {s.exit_order_id} {order.status} – neuer Versuch nächste Runde.",
-                       s.symbol)
-            s.exit_order_id = s.exit_order_time = None
-        elif order is None and self._clock() - (s.exit_order_time or 0) > ENTRY_ORDER_TIMEOUT:
-            if pos is None or pos.qty <= 0:
-                s.reset_trading_state()
-                self._emit("warn", f"{s.symbol}: Verkaufs-Order nicht mehr auffindbar, keine Position – Zyklus zurückgesetzt.",
+            order_id = self._place(s, EXIT, "SELL", qty)
+            if order_id:
+                s.exit_order_id, s.exit_order_time = order_id, self._clock()
+                self._emit("order", f"{s.symbol}: Trend unter SMA{s.trend_sma} – Market-Sell {qty} platziert – ID {order_id}.",
                            s.symbol)
-            else:
-                s.exit_order_id = s.exit_order_time = None
-                self._emit("warn", f"{s.symbol}: Verkaufs-Order nicht mehr auffindbar – neuer Versuch nächste Runde.", s.symbol)
-
-    def _handle_entry(self, s: EquitySystem, pos: Position | None, orders: list[Order], allow_new: bool = True,
-                      fills: dict[str, OrderFill] | None = None) -> None:
-        if pos is not None and pos.qty < 0:
-            self._emit("warn", f"{s.symbol}: Short-Position vorhanden – Grid wird nicht gehandelt.", s.symbol, key=f"short:{s.symbol}")
-            return
-        if pos is not None and pos.qty > 0:
-            # Einstiegspreis EINMAL setzen: Ausführungspreis der eigenen Einstiegs-Order, sonst avgPrice
-            # der Position (bei IBKR inkl. Kommission, z.B. 332.21 statt 331.21)
-            entry_order = next((o for o in orders if o.order_id == s.entry_order_id), None) if s.entry_order_id else None
-            entry_fill = (fills or {}).get(s.entry_order_id) if s.entry_order_id and entry_order is None else None
-            if entry_order is not None and entry_order.is_filled and entry_order.avg_fill_price:
-                s.entry_price = round(entry_order.avg_fill_price, 2)
-            elif entry_fill is not None:
-                s.entry_price = round(entry_fill.price, 2)
-            else:
-                s.entry_price = round(pos.avg_price, 2)
-            s.simulated = s.simulated or pos.simulated
-            how = "Einstieg gefüllt" if s.entry_order_id else "bestehende Position übernommen"
-            if entry_order is not None and entry_order.is_filled:
-                s.entry_qty, s.entry_ts = entry_order.qty, self._clock()
-                self._record(s, "BUY", entry_order.qty, s.entry_price, "entry", entry_order, entry_order.order_id)
-            elif entry_fill is not None:
-                s.entry_qty, s.entry_ts = entry_fill.qty, entry_fill.ts
-                self._record(s, "BUY", entry_fill.qty, entry_fill.price, "entry", None, entry_fill.order_id,
-                             when=entry_fill.ts)
-            else:
-                s.entry_qty, s.entry_ts = pos.qty, self._clock()
-                self._record(s, "BUY", pos.qty, s.entry_price, "adopted", None, s.entry_order_id or "bestand")
-            s.entry_order_id = None
-            s.entry_order_time = None
-            self._emit("order", f"{s.symbol}: {how}, Einstiegspreis {s.entry_price:.2f}.", s.symbol)
-            return
-        if s.entry_order_id:
-            order = next((o for o in orders if o.order_id == s.entry_order_id), None)
-            if order is not None and order.is_cancelled:
-                self._emit("warn", f"{s.symbol}: Einstiegs-Order {s.entry_order_id} {order.status} – neuer Versuch nächste Runde.", s.symbol)
-                s.entry_order_id = s.entry_order_time = None
-            elif order is None and self._clock() - (s.entry_order_time or 0) > ENTRY_ORDER_TIMEOUT:
-                self._emit("warn", f"{s.symbol}: Einstiegs-Order {s.entry_order_id} nicht mehr auffindbar – neuer Versuch nächste Runde.", s.symbol)
-                s.entry_order_id = s.entry_order_time = None
-            # sonst: offen oder gefüllt, Position noch nicht sichtbar -> warten
-            return
-        if any(o.is_open and o.symbol == s.symbol and o.side == "BUY" and o.order_type == "MKT" for o in orders):
-            self._emit("warn", f"{s.symbol}: fremde offene Market-Buy-Order – kein zweiter Einstieg.", s.symbol, key=f"entry:{s.symbol}")
-            return
-        if self.paused or not allow_new:
-            return
-        quote = self.quotes.get(s.symbol)
-        qty = self._qty(s, quote.price if quote else None)
-        if qty is None:
-            self._emit("warn", f"{s.symbol}: kein Preis für die Ordergrösse – Einstieg nächste Runde.", s.symbol,
-                       key=f"size:{s.symbol}")
-            return
-        result = self.broker.place_market_order(s.symbol, "BUY", qty)
-        s.entry_order_id = result.order_id
-        s.entry_order_time = self._clock()
-        s.simulated = s.simulated or result.order_id.startswith("DRY-")
-        self._emit("order", f"{s.symbol}: Einstieg Market-Buy {qty} platziert – ID {result.order_id}.", s.symbol)
+        elif had_state:
+            if s.bot_qty() > 0.5:
+                self._emit("error", f"{s.symbol}: {s.bot_qty():g} eigene Stück nicht im Konto – nichts verkauft, Zyklus "
+                                    "zurückgesetzt. Bitte prüfen.", s.symbol)
+            s.reset_trading_state()
+            self._emit("info", f"{s.symbol}: Trend unter SMA{s.trend_sma} – keine eigenen Stück, warte auf Aufwärtstrend.",
+                       s.symbol)

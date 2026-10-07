@@ -11,15 +11,13 @@ import argparse
 import json
 import sys
 
-import requests
-
 from quantdesk.config import load_settings
 from quantdesk.forward import (
     C_PARAMS,
     DEFAULT_ORDER_USD,
     TEST_MONTHS,
-    build_report,
     c_systems,
+    load_report,
     setup_systems,
 )
 from quantdesk.broker.ibkr import parse_executions
@@ -27,7 +25,6 @@ from quantdesk.executions import ExecutionArchive
 from quantdesk.history import load_history
 from quantdesk.journal import Journal
 from quantdesk.research import load_universe
-from quantdesk.walkforward import FX_SYMBOL, RATE_SYMBOL, Market
 
 DISCLAIMER = "Paper-Trading über wenige Monate ist statistisch wenig aussagekräftig. Keine Anlageberatung."
 
@@ -35,15 +32,114 @@ DISCLAIMER = "Paper-Trading über wenige Monate ist statistisch wenig aussagekr�
 def cmd_setup(args, settings) -> int:
     symbols = load_universe(args.universe)
     added, skipped = setup_systems(settings.data_file, symbols, args.order_usd)
-    print(f"Kandidat C ({C_PARAMS.label()}, {args.order_usd:,.0f} $ pro Order) in {settings.data_file}:".replace(",", "'"))
+    usd = f"{args.order_usd:,.0f}".replace(",", "'")
+    print(f"Kandidat C ({C_PARAMS.label()}, {usd} $ pro Order) in {settings.data_file}:")
     print(f"  neu angelegt (Status Off): {len(added)}" + (f" – {', '.join(added)}" if added else ""))
     if skipped:
         print(f"  schon vorhanden, nicht verändert: {', '.join(skipped)}")
     budget = len(c_systems(settings.data_file)) * (C_PARAMS.levels + 1) * args.order_usd
-    print(f"  Budget des Vorwärtstests: {budget:,.0f} $ (so viel kann C maximal gleichzeitig investieren)".replace(",", "'"))
-    print("\nNächste Schritte: Bot im DRY_RUN starten, alle C-Zeilen markieren (Shift-Klick) → Toggle.")
-    print("Hält das Paper-Konto schon Aktien aus der Liste, übernimmt C diese Position. Vorher verkaufen, wenn")
-    print("der Test sauber sein soll. Auf PAPER erst umstellen, wenn du den Start bestätigst.")
+    budget_txt = f"{budget:,.0f}".replace(",", "'")
+    print(f"  Budget des Vorwärtstests: {budget_txt} $ (so viel kann C maximal gleichzeitig investieren)")
+    print("\nNächste Schritte: Bot im DRY_RUN starten, alle C-Zeilen markieren (Shift-Klick) -> Toggle.")
+    print("Aktien, die das Konto schon hält, fasst der Bot nicht an – er handelt nur seine eigenen Stück.")
+    print("Auf PAPER erst umstellen, wenn du den Start bestätigst.")
+    return 0
+
+
+def cmd_migrate(args, settings) -> int:
+    """Einmalig: Order-Register aus quantdesk.log/Journal füllen, Fills früherer Sitzungen nachbuchen.
+    Muss bei GESTOPPTEM Bot laufen. Platziert keine Orders (Abgleichslauf)."""
+    import os
+    import shutil
+    import time
+
+    from quantdesk.app import build_services
+    from quantdesk.registry import BotOrder, OrderRegistry, orders_from_log
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for path in (settings.data_file, settings.journal_file, settings.registry_file):
+        if os.path.exists(path):
+            shutil.copy2(path, f"{path}.vor-migration-{stamp}")
+    registry = OrderRegistry(settings.registry_file)
+    added = 0
+    if os.path.exists(args.log):
+        with open(args.log, encoding="utf-8", errors="replace") as f:
+            for order in orders_from_log(f):
+                added += registry.add(order)
+    # Orders, die nur im Zustand bzw. Journal stehen (z.B. Log rotiert)
+    for s in c_systems(settings.data_file):
+        for lv in s.levels:
+            if lv.order_id and not lv.order_id.startswith("DRY-"):
+                added += registry.add(BotOrder(lv.order_id, s.symbol, "level", "BUY", float(lv.qty or round(s.order_usd / lv.price)),
+                                               lv.level, lv.price))
+    for f in Journal(settings.journal_file).read():
+        if f.kind in ("entry", "level", "exit") and f.order_id not in ("bestand", ""):
+            added += registry.add(BotOrder(f.order_id, f.symbol, f.kind, f.side, f.qty))
+    print(f"Order-Register: {added} Orders neu erfasst, insgesamt {len(registry.all())}.")
+
+    # Symbole ohne Handelsberechtigung (aus abgelehnten Orders im Log) sperren
+    from quantdesk import storage
+    from quantdesk.registry import not_tradable_from_log
+
+    blocked = set()
+    if os.path.exists(args.log):
+        with open(args.log, encoding="utf-8", errors="replace") as f:
+            blocked = not_tradable_from_log(f)
+    systems = storage.load(settings.data_file)
+    newly = sorted(sym for sym in blocked if sym in systems and not systems[sym].not_tradable)
+    for sym in newly:
+        systems[sym].not_tradable = True
+    if newly:
+        storage.save(settings.data_file, systems)
+    print(f"Ohne Handelsberechtigung gesperrt: {', '.join(newly) or 'keine neuen'}")
+
+    services = build_services(settings, infer_missing=True)
+    engine = services.engine
+    journal_before = len(engine.journal.read())
+    engine.run_once(decide=False)
+    services.broker.close()
+    events = []
+    while not engine.events.empty():
+        events.append(engine.events.get())
+    booked = [e.message for e in events if "nachgebucht" in e.message or "gefüllt am" in e.message or "abgeleitet" in e.message]
+    problems = [e.message for e in events if e.level == "error"]
+    print(f"Journal: {journal_before} -> {len(engine.journal.read())} Einträge.")
+    for m in booked:
+        print("  " + m)
+    if problems:
+        print("\nNicht auflösbar – bitte prüfen:")
+        for m in problems:
+            print("  - " + m)
+    print(f"\nSicherungen: *.vor-migration-{stamp}")
+    return 1 if problems else 0
+
+
+def cmd_close(args, settings) -> int:
+    """System endgültig schliessen, z.B. nach einer Übernahme gegen Bargeld: eigene Stück zum Abfindungspreis
+    als Verkauf buchen (Art 'corporate_action'), System Off + closed. Bot dabei stoppen."""
+    from quantdesk import storage
+
+    systems = storage.load(settings.data_file)
+    s = systems.get(args.symbol.upper())
+    if s is None:
+        print(f"{args.symbol}: kein System in {settings.data_file}")
+        return 1
+    qty = args.qty if args.qty is not None else s.bot_qty()
+    journal = Journal(settings.journal_file)
+    when = None
+    if args.date:
+        import calendar
+        import time
+
+        when = calendar.timegm(time.strptime(args.date + " 20:00", "%Y-%m-%d %H:%M"))
+    if qty > 0:
+        journal.record(s.symbol, "SELL", qty, args.price, "corporate_action", f"CA-{s.symbol}-{args.date or 'heute'}",
+                       False, when=when, note=args.note)
+    s.reset_trading_state()
+    s.status = "Off"
+    s.closed = args.note
+    storage.save(settings.data_file, systems)
+    print(f"{s.symbol}: {qty:g} Stück zu {args.price} als '{args.note}' gebucht, System geschlossen.")
     return 0
 
 
@@ -80,37 +176,14 @@ def print_report(r) -> None:
 
 
 def cmd_report(args, settings) -> int:
-    systems = c_systems(settings.data_file)
-    if not systems:
-        print("Keine C-Systeme in equities.json – zuerst: python forward_test.py setup")
-        return 1
-    order_usd = systems[0].order_usd or DEFAULT_ORDER_USD
-    symbols = {s.symbol for s in systems}
-    fills = [f for f in Journal(args.journal or settings.journal_file).read(include_simulated=args.include_dry)
-             if f.symbol in symbols]
-    bars, missing = {}, []
-    for sym in sorted(symbols):
-        try:
-            bars[sym] = load_history(sym, 2)
-        except (requests.RequestException, ValueError):
-            missing.append(sym)
-    if missing:
-        print(f"Ohne Kursdaten (übersprungen, zählen nicht zum Budget): {', '.join(missing)}")
-    # Budget nur für Symbole mit Kursdaten – genau wie im Backtest desselben Zeitraums
-    budget = len(bars) * (C_PARAMS.levels + 1) * order_usd
-    fills = [f for f in fills if f.symbol in bars]
+    journal = Journal(args.journal or settings.journal_file)
     try:
-        spy = load_history("SPY", 2)
-        rate = load_history(RATE_SYMBOL, 2)
-        fx = load_history(FX_SYMBOL, 2)
-    except (requests.RequestException, ValueError) as e:
-        print(f"Vergleichsdaten nicht ladbar: {e}", file=sys.stderr)
-        return 1
-    try:
-        report = build_report(fills, bars, spy, Market.from_bars(rate, fx), budget, order_usd, args.fee, args.start)
+        report, missing = load_report(settings.data_file, journal, load_history, args.include_dry, args.fee, args.start)
     except ValueError as e:
         print(e)
         return 1
+    if missing:
+        print(f"Ohne Kursdaten (übersprungen, zählen nicht zum Budget): {', '.join(missing)}")
     print_report(report)
     print(f"\n{DISCLAIMER}")
     return 0
@@ -145,11 +218,24 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--include-dry", action="store_true", help="simulierte DRY_RUN-Fills mitzählen")
     t = sub.add_parser("import-trades", help="gespeicherte IBKR-Ausführungen ins Archiv übernehmen")
     t.add_argument("file", help="JSON-Antwort von /iserver/account/trades")
+    m = sub.add_parser("migrate", help="einmalig: Order-Register füllen, Fills früherer Sitzungen nachbuchen")
+    m.add_argument("--log", default="quantdesk.log", help="Log mit den platzierten Orders")
+    c = sub.add_parser("close", help="System nach Firmenereignis schliessen (z.B. Übernahme gegen Bargeld)")
+    c.add_argument("symbol")
+    c.add_argument("--price", type=float, required=True, help="Abfindung bzw. Erlös pro Aktie in $")
+    c.add_argument("--date", default=None, help="Tag des Ereignisses YYYY-MM-DD")
+    c.add_argument("--qty", type=float, default=None, help="Stückzahl (Standard: eigene Stück laut Fills)")
+    c.add_argument("--note", required=True, help="Erklärung fürs Journal")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     settings = load_settings()
-    commands = {"setup": cmd_setup, "report": cmd_report, "import-trades": cmd_import_trades}
+    commands = {"setup": cmd_setup, "report": cmd_report, "import-trades": cmd_import_trades,
+                "migrate": cmd_migrate, "close": cmd_close}
     return commands[args.cmd](args, settings)
 
 
 if __name__ == "__main__":
+    # Windows-Konsole (cp1252) kennt nicht alle Zeichen (z.B. ✓, Ø) -> ersetzen statt abstürzen
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     sys.exit(main())

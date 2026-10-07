@@ -109,6 +109,9 @@ class EquitySystem:
     exit_order_time: float | None = None
     entry_qty: float | None = None  # Stückzahl des Einstiegs
     entry_ts: float | None = None  # Zeitpunkt des Einstiegs (für geschätzte Fill-Tage)
+    sold_qty: float = 0.0  # im laufenden Zyklus schon verkaufte eigene Stück (Teilverkauf)
+    not_tradable: bool = False  # IBKR: keine Handelsberechtigung -> wird nicht gehandelt, nicht im Budget
+    closed: str | None = None  # Grund, wenn das System endgültig geschlossen ist (z.B. Übernahme)
 
     def __post_init__(self):
         validate_grid(self.num_levels, self.drawdown)
@@ -157,6 +160,7 @@ class EquitySystem:
         self.exit_order_time = None
         self.entry_qty = None
         self.entry_ts = None
+        self.sold_qty = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -185,7 +189,18 @@ class EquitySystem:
             exit_order_time=d.get("exit_order_time"),
             entry_qty=float(d["entry_qty"]) if d.get("entry_qty") is not None else None,
             entry_ts=d.get("entry_ts"),
+            sold_qty=float(d.get("sold_qty") or 0.0),
+            not_tradable=bool(d.get("not_tradable", False)),
+            closed=d.get("closed"),
         )
+
+    @property
+    def tradable(self) -> bool:
+        return not self.not_tradable and not self.closed
+
+    def bot_qty(self) -> float:
+        """Eigene Stück laut Fills (Einstieg + gefüllte Levels - verkauft). Fremde Bestände zählen nie."""
+        return max((self.accounted_qty() or 0.0) - self.sold_qty, 0.0)
 
     def accounted_qty(self) -> float | None:
         """Stückzahl laut eigener Buchführung (Einstieg + gefüllte Levels). None = Einstieg unbekannt."""

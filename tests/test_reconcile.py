@@ -14,6 +14,7 @@ from quantdesk.engine import EXEC_REFRESH_SECONDS, Engine
 from quantdesk.executions import ExecutionArchive, aggregate
 from quantdesk.history import Bar
 from quantdesk.journal import Journal
+from quantdesk.registry import BotOrder, OrderRegistry
 from quantdesk.strategy import FILLED, PLACED
 from tests.fakes import FakeBroker, FakeMarketData
 
@@ -36,6 +37,7 @@ def engine(tmp_path, broker, trend=True, clock=None, bars=None):
     e = Engine(broker, FakeMarketData(87.0), str(tmp_path / "eq.json"), events=queue.Queue(),
                trend=lambda s, n: trend, journal=Journal(str(tmp_path / "j.jsonl"), clock=clock or time.time),
                executions=ExecutionArchive(str(tmp_path / "ex.jsonl")), bars=bars,
+               registry=OrderRegistry(str(tmp_path / "reg.jsonl")),
                **({"clock": clock} if clock else {}))
     return e
 
@@ -136,6 +138,7 @@ def test_level_inferred_from_position_when_execution_is_gone(tmp_path):
     b = FakeBroker(price=87.0)
     e, ids = ko_after_restart(tmp_path, b, bars=lambda s: bars)
     e.systems["KO"].entry_ts = calendar.timegm(time.strptime("2026-09-29", "%Y-%m-%d"))
+    e.infer_missing = True  # nur in der einmaligen Migration erlaubt
     b.executions = []
     e._last_exec_fetch = None
     e.run_once()
@@ -145,12 +148,15 @@ def test_level_inferred_from_position_when_execution_is_gone(tmp_path):
     assert (f.day, f.price, f.estimated) == ("2026-09-30", 85.26, True)  # erster Tag mit Tief ≤ 85.26
 
 
-def test_no_inference_without_extra_shares(tmp_path):
+def test_no_inference_outside_migration_and_without_extra_shares(tmp_path):
     b = FakeBroker(price=87.0)
     e, ids = ko_after_restart(tmp_path, b)
-    b.positions["KO"] = Position("KO", 11, 87.0)  # Levels noch offen, nur nicht gelistet
     b.executions = []
     e._last_exec_fetch = None
+    e.run_once()  # Position 23 > eigene 11, aber ausserhalb der Migration wird nichts abgeleitet
+    assert all(lv.status == PLACED for lv in e.systems["KO"].levels)
+    e.infer_missing = True
+    b.positions["KO"] = Position("KO", 11, 87.0)  # keine zusätzlichen Stück -> nichts ableiten
     e.run_once()
     assert all(lv.status == PLACED for lv in e.systems["KO"].levels)
     assert [f.kind for f in e.journal.read()] == ["entry"]
@@ -190,33 +196,34 @@ def test_entry_filled_in_earlier_session_uses_execution(tmp_path):
     assert [(f.kind, f.price, f.day) for f in e.journal.read()] == [("entry", 87.0, "2026-10-02")]
 
 
-def test_orphan_execution_is_booked_once(tmp_path):
-    """Fall CVS: Level gefüllt, als der Bot aus war, danach Verkauf – das Level steht nicht mehr im Zustand."""
+def test_untracked_fill_of_own_order_is_booked_once_foreign_never(tmp_path):
+    """Fall CVS: eigenes Level gefüllt, als der Bot aus war, danach Verkauf – das Level steht nicht mehr im Zustand.
+    Ausführungen von Orders, die nicht im Register stehen (z.B. Tims Handkäufe), werden nie gebucht."""
     b = FakeBroker(price=87.0)
     e = engine(tmp_path, b)
     e.add_system("CVS", 5, 0.02, trend_sma=200, trend_exit=True, order_usd=1000)
     e.toggle(["CVS"])
-    e.journal.record("CVS", "BUY", 12, 87.0, "entry", "E1", False, when=OCT2 - 86400)
-    b.executions = [ex("410323215", 12, 85.26, symbol="CVS"), ex("E1", 12, 87.0, symbol="CVS"),
-                    ex("999", 5, 10.0, symbol="ZZZ")]  # fremdes Symbol -> ignorieren
+    e.registry.add(BotOrder("410323215", "CVS", "level", "BUY", 12, 1, 85.26))
+    b.executions = [ex("410323215", 12, 85.26, symbol="CVS"), ex("MANUELL", 50, 86.0, symbol="CVS")]
     e.trend = lambda s, n: None
     e.run_once()
     e._last_exec_fetch = None
     e.run_once()
-    fills = e.journal.read()
-    assert [(f.order_id, f.kind) for f in fills] == [("E1", "entry"), ("410323215", "level")]
+    assert [(f.order_id, f.kind, f.exec_ids) for f in e.journal.read()] == [("410323215", "level", ("x410323215-12",))]
 
 
-def test_disappeared_position_warns_and_does_nothing(tmp_path):
+def test_missing_own_shares_raise_alarm_and_nothing_is_bought(tmp_path):
     b = FakeBroker(price=87.0)
     e, ids = ko_after_restart(tmp_path, b)
-    del b.positions["KO"]  # z.B. Übernahme gegen Bargeld
+    del b.positions["KO"]  # z.B. Übernahme gegen Bargeld (Fall WBD)
     placed_before = len(b.placed)
     e.run_once()
-    msgs = []
+    errors = []
     while not e.events.empty():
-        msgs.append(e.events.get().message)
-    assert any("verschwunden" in m for m in msgs)
+        ev = e.events.get()
+        if ev.level == "error":
+            errors.append(ev.message)
+    assert any("Abweichung" in m for m in errors)
     assert len(b.placed) == placed_before and e.systems["KO"].entry_price == 87.0
 
 

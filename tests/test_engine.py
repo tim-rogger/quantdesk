@@ -115,15 +115,20 @@ def test_filled_and_cancelled_levels_detected(data_file):
     assert "gefüllt" in events_text(e)
 
 
-def test_existing_position_adopted_without_buying(data_file):
+def test_foreign_position_is_never_adopted(data_file):
+    # Fall LLY: Tim hält schon 183 Stück. Der Bot kauft seine eigenen und verkauft nur seine eigenen.
     b = FakeBroker()
-    b.positions["AAPL"] = Position("AAPL", 10, 150.123)
+    b.positions["AAPL"] = Position("AAPL", 183, 150.0)
     e = make_engine(b, data_file)
     aapl_on(e, levels=2, drawdown=0.1)
     e.run_once()
-    assert b.orders_of_type("MKT") == []
-    assert e.systems["AAPL"].entry_price == 150.12
-    assert [o[4] for o in b.placed] == [135.11, 120.1]
+    assert b.placed == [("MKT", "AAPL", "BUY", 1, None)]  # eigener Einstieg trotz fremder Position
+    b.fill("O1", 100.0)
+    e.run_once()
+    s = e.systems["AAPL"]
+    assert s.entry_price == 100.0 and s.bot_qty() == 1  # eigener Fill zählt, nicht der Durchschnitt aller 184
+    assert [o[4] for o in b.placed[1:]] == [90.0, 80.0]
+    assert any("fremde" in m for m in events_text(e).splitlines())
 
 
 def test_off_system_does_nothing(data_file):
@@ -217,17 +222,17 @@ def test_persistence_roundtrip_no_duplicate_orders(data_file):
     assert e2.systems["AAPL"].entry_price == 100.0
 
 
-def test_open_order_at_level_price_is_adopted(data_file):
-    # z.B. State verloren, Order liegt aber schon bei IBKR
+def test_foreign_open_order_at_level_price_is_not_adopted(data_file):
     b = FakeBroker()
-    b.positions["AAPL"] = Position("AAPL", 1, 100.0)
-    b.place_limit_order("AAPL", "BUY", 1, 98.005)
+    b.place_limit_order("AAPL", "BUY", 1, 98.0)  # Tims eigene Order, zufällig auf Level-Preis
     b.placed.clear()
     e = make_engine(b, data_file)
     aapl_on(e, levels=2, drawdown=0.02)
     e.run_once()
-    assert [o[4] for o in b.placed] == [96.0]
-    assert e.systems["AAPL"].levels[0].order_id == "O1"
+    b.fill("O2", 100.0)
+    e.run_once()
+    assert [o[4] for o in b.placed if o[0] == "LMT"] == [98.0, 96.0]  # eigene Level-Orders
+    assert e.systems["AAPL"].levels[0].order_id != "O1"
 
 
 def test_cancelled_entry_order_is_retried(data_file):
@@ -256,22 +261,23 @@ def test_vanished_entry_order_retried_only_after_timeout(data_file):
     assert len(b.placed) == 2
 
 
-def test_foreign_open_market_buy_blocks_entry(data_file):
+def test_foreign_open_market_buy_does_not_block_entry(data_file):
     b = FakeBroker()
-    b.place_market_order("AAPL", "BUY", 1)
+    b.place_market_order("AAPL", "BUY", 1)  # fremde Order
     b.placed.clear()
     e = make_engine(b, data_file)
     aapl_on(e)
     e.run_once()
-    assert b.placed == []
+    assert b.placed == [("MKT", "AAPL", "BUY", 1, None)]
 
 
 def test_order_error_keeps_level_pending_and_bot_runs(data_file):
     b = FakeBroker()
-    b.positions["AAPL"] = Position("AAPL", 1, 100.0)
-    b.fail_orders = True
     e = make_engine(b, data_file)
     aapl_on(e, levels=2, drawdown=0.02)
+    e.run_once()
+    b.fill("O1", 100.0)
+    b.fail_orders = True
     e.run_once()
     assert [lv.status for lv in e.systems["AAPL"].levels] == ["pending", "pending"]
     b.fail_orders = False
@@ -281,13 +287,14 @@ def test_order_error_keeps_level_pending_and_bot_runs(data_file):
 
 def test_remove_cancels_open_orders(data_file):
     b = FakeBroker()
-    b.positions["AAPL"] = Position("AAPL", 1, 100.0)
     e = make_engine(b, data_file)
     aapl_on(e, levels=2, drawdown=0.02)
     e.run_once()
+    b.fill("O1", 100.0)
+    e.run_once()
     assert e.view[0]["open_orders"] == 2
     e.remove("AAPL", cancel_orders=True)
-    assert sorted(b.cancelled) == ["O1", "O2"]
+    assert sorted(b.cancelled) == ["O2", "O3"]
     assert "AAPL" not in e.systems
 
 

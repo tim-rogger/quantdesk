@@ -258,6 +258,38 @@ sind beim optimierten Grid geschönt (Overfitting).
 > Im Bot gibt es davon nur den **Trendfilter mit Exit** (Kandidat C, siehe unten). Take-Profit, Stop-Loss und
 > Momentum gibt es nur im Backtest.
 
+## Server-Betrieb (24/7, eigene App)
+
+Damit der Bot ohne Laptop läuft, gibt es einen Docker-Aufbau für einen kleinen Server. Die Anleitung Schritt für
+Schritt steht in **[deploy/SERVER.md](deploy/SERVER.md)**.
+
+| Dienst | Was er macht |
+|---|---|
+| `ib-gateway` | IB Gateway + IBC (Image `ghcr.io/gnzsnz/ib-gateway`), **nur Paper**, loggt automatisch neu ein, kein Port nach aussen |
+| `bot` | `scheduler.py` startet `run_daily.py` an jedem NYSE-Handelstag: **10:00 New York** Handel, **15:30** nur Abgleich |
+| `dashboard` | eigene Web-App (PWA, aufs Handy installierbar): Kapitalkurve C vs. SPY vs. SPY/Cash-Mischung, Positionen, F1–F5, letzte Läufe, **STOP-ALL mit PIN** |
+| `ntfy` | Push aufs Handy: Tageszusammenfassung, jede Ausführung, jeder Fehler |
+
+Erreichbar nur über **Tailscale** (privates Netz zwischen Server, Laptop und Handy). Öffentlich ist nur SSH mit Schlüssel offen.
+
+Der Server verbindet sich über die TWS-API (`QUANTDESK_BROKER=tws`, Bibliothek `ib_async`). Auf dem Laptop
+läuft die GUI weiter mit dem Client Portal (`QUANTDESK_BROKER=clientportal`). **Nie beides gleichzeitig mit demselben
+Paper-Benutzer**, sonst trennt IBKR eine Sitzung („competing session“).
+
+Regeln, die überall gelten:
+- **Nur eigene Aktien:** Der Bot merkt sich jede eigene Order (`bot_orders.jsonl`). Nur Fills dieser Orders zählen.
+  Ein Verkauf umfasst höchstens `min(eigene Stück, Bestand)`. Bestehende Positionen werden nie übernommen.
+- **Fills früherer Tage** werden über die Ausführungen bei IBKR mit echtem Datum, Preis und Stückzahl nachgebucht, idempotent.
+  Jede gesehene Ausführung wird archiviert (`executions.jsonl`).
+- **IBKR-Warnungen werden nicht weggeklickt:** Lehnt IBKR eine Order ab, gilt sie als nicht platziert. Ist eine Order
+  trotz Warnung aktiv, geht die Warnung als Push raus. Fehlt die Handelsberechtigung, wird das Symbol gesperrt (`not_tradable`).
+
+Einmalige Migration (bei gestopptem Bot) und Abschluss nach einem Firmenereignis:
+```bat
+python forward_test.py migrate
+python forward_test.py close WBD --price 31.01666668 --date 2026-10-06 --note "Übernahme durch Paramount Skydance"
+```
+
 ## Vorwärtstest von Kandidat C (Paper-Konto)
 
 Die Forschung ist abgeschlossen (Fazit in der [ROADMAP](ROADMAP.md)): Nichts hat SPY nach fairen Regeln geschlagen.
@@ -292,7 +324,11 @@ DRY_RUN-Fills, zum Ausprobieren.
 bot.py                      Tkinter-GUI (Einstiegspunkt)
 backtest.py                 Backtest einzelner Aktien (Kommandozeile)
 research.py                 Strategie-Vergleich auf ~50 Aktien (Kommandozeile)
-forward_test.py             Vorwärtstest von C: Einrichtung und Monatsreport
+forward_test.py             Vorwärtstest von C: setup, report, migrate, close, import-trades
+run_daily.py                headless Tageslauf (Server): trade | reconcile
+scheduler.py                startet run_daily.py an NYSE-Handelstagen (10:00 / 15:30 New York)
+dashboard/                  eigene Web-App (FastAPI + PWA), nur lesend + STOP-ALL mit PIN
+deploy/                     Docker-Compose, Dockerfile, .env.example, SERVER.md
 data/universe.csv           Aktien für research.py
 start.bat                   Doppelklick-Start
 quantdesk/
@@ -301,6 +337,12 @@ quantdesk/
   broker/base.py            Broker-Interface + Datentypen (Position, Order)
   broker/ibkr.py            IBKR Client Portal REST-Client
   broker/dry_run.py         DRY_RUN-Wrapper (liest echt, sendet nichts) + Offline-Broker
+  broker/tws.py             IB Gateway / TWS-API (ib_async) für den Server
+  registry.py               Register der eigenen Orders (nur deren Fills zählen)
+  executions.py             Archiv aller IBKR-Ausführungen
+  notify.py                 Push über ntfy
+  schedule.py               NYSE-Handelskalender (exchange_calendars)
+  status.py                 Snapshots und Status fürs Dashboard
   marketdata.py             Preis: IBKR-Snapshot → Stooq → Yahoo
   news.py                   Yahoo-RSS-Schlagzeilen
   strategy.py               reine Grid/DCA-Logik (keine I/O)

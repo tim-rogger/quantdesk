@@ -16,6 +16,8 @@ from quantdesk.broker.base import (
     BrokerError,
     Execution,
     NotAuthenticatedError,
+    NotTradableError,
+    is_permission_error,
     Order,
     OrderResult,
     Position,
@@ -51,6 +53,11 @@ def _to_float(value: Any, default: float | None = None) -> float | None:
 def _normalize_side(side: Any) -> str:
     text = str(side or "").strip().upper()
     return {"B": "BUY", "S": "SELL"}.get(text, text)
+
+
+def _reject(message: str) -> BrokerError:
+    cls = NotTradableError if is_permission_error(message) else BrokerError
+    return cls(f"IBKR hat die Order abgelehnt: {message}")
 
 
 def parse_executions(raw: Any, account_id: str) -> list[Execution]:
@@ -254,6 +261,8 @@ class IbkrClient(Broker):
                     status=str(item.get("status") or ""),
                     conid=int(conid) if conid else None,
                     avg_fill_price=_to_float(item.get("avgPrice")),
+                    filled_qty=_to_float(item.get("filledQuantity")),
+                    filled_at=(_to_float(item.get("lastExecutionTime_r")) or 0) / 1000 or None,
                 )
             )
         return orders
@@ -292,13 +301,13 @@ class IbkrClient(Broker):
         for attempt in range(MAX_REPLY_CONFIRMATIONS + 1):
             if isinstance(resp, dict):
                 if resp.get("error"):
-                    raise BrokerError(f"IBKR hat die Order abgelehnt: {resp['error']}")
+                    raise _reject(str(resp["error"]))
                 resp = [resp]
             if not isinstance(resp, list) or not resp:
                 raise BrokerError(f"Unerwartete Order-Antwort von IBKR: {resp!r}")
             first = resp[0]
             if first.get("error"):
-                raise BrokerError(f"IBKR hat die Order abgelehnt: {first['error']}")
+                raise _reject(str(first["error"]))
             if first.get("order_id"):
                 return OrderResult(str(first["order_id"]), str(first.get("order_status", "")), messages)
             reply_id = first.get("id")

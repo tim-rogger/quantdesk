@@ -165,20 +165,22 @@ def test_exit_without_position_just_resets(tmp_path):
     assert e.systems["AAPL"].entry_order_id is None and not b.orders_of_type("MKT")[0].is_open
 
 
-def test_dry_run_simulates_sell_once(tmp_path):
+def test_dry_run_sells_only_own_shares_once(tmp_path):
     real = FakeBroker()
-    real.positions["AAPL"] = Position("AAPL", 3, 90.0)  # echte Paper-Position
+    real.positions["AAPL"] = Position("AAPL", 3, 90.0)  # fremde, echte Paper-Position
     dry = DryRunBroker(real, price_fn=lambda s: 100.0)
     trend = [True]
     e, _ = c_engine(dry, tmp_path, trend)
-    e.run_once()  # übernimmt die 3 echten Aktien
+    e.run_once()  # eigener simulierter Einstieg: 10 Stück
+    e.run_once()
+    assert e.systems["AAPL"].bot_qty() == 10
     trend[0] = False
     for _ in range(4):
         e.run_once()
     assert real.placed == [] and real.cancelled == []
     sells = [o for o in dry.get_orders() if o.side == "SELL"]
-    assert len(sells) == 1  # simulierter Verkauf nur einmal, obwohl die echte Position bleibt
-    assert dry.get_positions() == []
+    assert [(o.qty) for o in sells] == [10]  # nur die eigenen, nur einmal
+    assert [(p.symbol, p.qty) for p in dry.get_positions()] == [("AAPL", 3)]  # fremde bleiben
 
 
 # ------------------------------------------------------------------ Engine == Backtest (Tag für Tag)

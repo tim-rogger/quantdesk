@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 # IBKR-Order-Status, gruppiert
-OPEN_STATUSES = frozenset({"Submitted", "PreSubmitted", "PendingSubmit"})
+OPEN_STATUSES = frozenset({"Submitted", "PreSubmitted", "PendingSubmit", "ApiPending", "PendingCancel"})
 FILLED_STATUSES = frozenset({"Filled"})
 CANCELLED_STATUSES = frozenset({"Cancelled", "ApiCancelled", "Inactive"})
 
@@ -18,6 +18,15 @@ class BrokerError(Exception):
 
 class NotAuthenticatedError(BrokerError):
     """Gateway läuft, aber es ist niemand eingeloggt (oder die Session ist abgelaufen)."""
+
+
+class NotTradableError(BrokerError):
+    """IBKR lehnt die Order ab, weil das Konto dieses Symbol nicht handeln darf (fehlende Handelsberechtigung)."""
+
+
+def is_permission_error(message: str) -> bool:
+    text = message.lower()
+    return "permission" in text or "berechtigung" in text or "not allowed to trade" in text
 
 
 @dataclass(frozen=True)
@@ -53,6 +62,8 @@ class Order:
     conid: int | None = None
     simulated: bool = False
     avg_fill_price: float | None = None  # Ausführungspreis ohne Kommission (nur bei Fills)
+    filled_qty: float | None = None  # bisher ausgeführte Stückzahl
+    filled_at: float | None = None  # Zeit der (letzten) Ausführung, Unix-Sekunden
 
     @property
     def is_open(self) -> bool:
@@ -149,3 +160,10 @@ class Broker(ABC):
     def get_executions(self, days: int = 7) -> list[Execution]:
         """Ausführungen der letzten Tage (auch von Orders früherer Sitzungen). Standard: keine."""
         return []
+
+    def get_net_liquidation(self) -> float | None:
+        """Nettowert des ganzen Kontos (Basiswährung). Standard: unbekannt."""
+        return None
+
+    def close(self) -> None:
+        """Verbindung schliessen (falls nötig)."""

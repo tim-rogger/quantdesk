@@ -23,6 +23,7 @@ class OrderFill:
     qty: float
     price: float  # mengengewichteter Durchschnitt
     ts: float  # Zeit der letzten Teilausführung
+    exec_ids: tuple = ()
 
 
 def aggregate(executions: list[Execution]) -> dict[str, OrderFill]:
@@ -35,7 +36,8 @@ def aggregate(executions: list[Execution]) -> dict[str, OrderFill]:
         if qty <= 0:
             continue
         price = sum(e.qty * e.price for e in ex) / qty
-        out[oid] = OrderFill(oid, ex[0].symbol, ex[0].side, qty, price, max(e.ts for e in ex))
+        out[oid] = OrderFill(oid, ex[0].symbol, ex[0].side, qty, price, max(e.ts for e in ex),
+                             tuple(e.exec_id for e in ex))
     return out
 
 

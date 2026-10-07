@@ -19,6 +19,7 @@ YAHOO_RSS_URL = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&reg
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=1d"
 
 MODES = ("DRY_RUN", "PAPER")
+BROKERS = ("clientportal", "tws")
 PAPER_ACCOUNT_PREFIX = "DU"
 
 
@@ -40,6 +41,16 @@ class Settings:
     news_enabled: bool
     journal_file: str = "journal.jsonl"
     executions_file: str = "executions.jsonl"
+    registry_file: str = "bot_orders.jsonl"
+    data_dir: str = "data"  # Snapshots, Status fürs Dashboard, Lauf-Protokoll, STOP-Schalter
+    broker: str = "clientportal"  # clientportal (Laptop, GUI) | tws (IB Gateway, Server)
+    tws_host: str = "127.0.0.1"
+    tws_port: int = 4002
+    tws_client_id: int = 17
+    ntfy_url: str = ""  # z.B. http://ntfy:80 – leer = keine Push-Nachrichten
+    ntfy_topic: str = "quantdesk"
+    ntfy_token: str = ""
+    dashboard_pin: str = ""
 
     @property
     def dry_run(self) -> bool:
@@ -80,4 +91,21 @@ def load_settings() -> Settings:
         news_enabled=_bool(os.getenv("QUANTDESK_NEWS_ENABLED"), True),
         journal_file=os.getenv("QUANTDESK_JOURNAL_FILE", "journal.jsonl"),
         executions_file=os.getenv("QUANTDESK_EXECUTIONS_FILE", "executions.jsonl"),
+        registry_file=os.getenv("QUANTDESK_REGISTRY_FILE", "bot_orders.jsonl"),
+        data_dir=os.getenv("QUANTDESK_DATA_DIR", "data"),
+        broker=_broker(os.getenv("QUANTDESK_BROKER", "clientportal")),
+        tws_host=os.getenv("TWS_HOST", "127.0.0.1").strip(),
+        tws_port=int(os.getenv("TWS_PORT", "4002")),
+        tws_client_id=int(os.getenv("TWS_CLIENT_ID", "17")),
+        ntfy_url=os.getenv("NTFY_URL", "").strip().rstrip("/"),
+        ntfy_topic=os.getenv("NTFY_TOPIC", "quantdesk").strip(),
+        ntfy_token=os.getenv("NTFY_TOKEN", "").strip(),
+        dashboard_pin=os.getenv("DASHBOARD_PIN", "").strip(),
     )
+
+
+def _broker(value: str) -> str:
+    value = value.strip().lower()
+    if value not in BROKERS:
+        raise ValueError(f"QUANTDESK_BROKER muss einer von {BROKERS} sein, nicht '{value}'")
+    return value
