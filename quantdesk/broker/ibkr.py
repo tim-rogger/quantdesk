@@ -14,7 +14,10 @@ from quantdesk.broker.base import (
     LOGIN_HINT,
     Broker,
     BrokerError,
+    Execution,
     NotAuthenticatedError,
+    NotTradableError,
+    is_permission_error,
     Order,
     OrderResult,
     Position,
@@ -50,6 +53,33 @@ def _to_float(value: Any, default: float | None = None) -> float | None:
 def _normalize_side(side: Any) -> str:
     text = str(side or "").strip().upper()
     return {"B": "BUY", "S": "SELL"}.get(text, text)
+
+
+def _reject(message: str) -> BrokerError:
+    cls = NotTradableError if is_permission_error(message) else BrokerError
+    return cls(f"IBKR hat die Order abgelehnt: {message}")
+
+
+def parse_executions(raw: Any, account_id: str) -> list[Execution]:
+    """Antwort von /iserver/account/trades -> Ausführungen dieses Kontos."""
+    out = []
+    for item in raw if isinstance(raw, list) else []:
+        acct = str(item.get("account") or item.get("accountCode") or account_id).upper()
+        ts_ms = _to_float(item.get("trade_time_r"))
+        if acct != account_id.upper() or item.get("order_id") in (None, "") or ts_ms is None:
+            continue
+        out.append(
+            Execution(
+                exec_id=str(item.get("execution_id")),
+                order_id=str(item.get("order_id")),
+                symbol=str(item.get("symbol") or "").upper(),
+                side=_normalize_side(item.get("side")),
+                qty=_to_float(item.get("size"), 0.0),
+                price=_to_float(item.get("price"), 0.0),
+                ts=ts_ms / 1000,
+            )
+        )
+    return out
 
 
 class IbkrClient(Broker):
@@ -231,9 +261,24 @@ class IbkrClient(Broker):
                     status=str(item.get("status") or ""),
                     conid=int(conid) if conid else None,
                     avg_fill_price=_to_float(item.get("avgPrice")),
+                    filled_qty=_to_float(item.get("filledQuantity")),
+                    filled_at=(_to_float(item.get("lastExecutionTime_r")) or 0) / 1000 or None,
                 )
             )
         return orders
+
+    def get_executions(self, days: int = 7) -> list[Execution]:
+        """Ausführungen der letzten `days` Tage (IBKR liefert höchstens 7). Erster Aufruf ist oft leer."""
+        self._ensure_iserver()
+        raw: list = []
+        for attempt in range(2):
+            data = self._request("GET", "/iserver/account/trades", params={"days": min(max(days, 1), 7)})
+            raw = data if isinstance(data, list) else []
+            if raw:
+                break
+            if attempt == 0:
+                self._sleep(0.5)
+        return parse_executions(raw, self.account_id)
 
     def place_market_order(self, symbol: str, side: str, qty: int) -> OrderResult:
         return self._place(symbol, {"orderType": "MKT", "side": side.upper(), "quantity": qty, "tif": "DAY"})
@@ -256,13 +301,13 @@ class IbkrClient(Broker):
         for attempt in range(MAX_REPLY_CONFIRMATIONS + 1):
             if isinstance(resp, dict):
                 if resp.get("error"):
-                    raise BrokerError(f"IBKR hat die Order abgelehnt: {resp['error']}")
+                    raise _reject(str(resp["error"]))
                 resp = [resp]
             if not isinstance(resp, list) or not resp:
                 raise BrokerError(f"Unerwartete Order-Antwort von IBKR: {resp!r}")
             first = resp[0]
             if first.get("error"):
-                raise BrokerError(f"IBKR hat die Order abgelehnt: {first['error']}")
+                raise _reject(str(first["error"]))
             if first.get("order_id"):
                 return OrderResult(str(first["order_id"]), str(first.get("order_status", "")), messages)
             reply_id = first.get("id")

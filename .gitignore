@@ -2,6 +2,15 @@
 .env
 equities.json
 journal.jsonl
+executions.jsonl
+bot_orders.jsonl
+data/*.jsonl
+data/*.json
+data/STOP
+deploy/.env
+deploy/secrets/
+deploy/state/
+deploy/ntfy-data/
 
 # Python
 __pycache__/

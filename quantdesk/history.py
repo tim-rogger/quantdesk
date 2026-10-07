@@ -14,7 +14,7 @@ YAHOO_HISTORY_URL = (
     "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     "?period1={start}&period2={end}&interval=1d&events=split,div"
 )
-CACHE_DIR = ".cache"
+CACHE_DIR = os.getenv("QUANTDESK_CACHE_DIR", ".cache")
 
 
 @dataclass(frozen=True)

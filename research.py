@@ -184,4 +184,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Windows-Konsole (cp1252) kennt nicht alle Zeichen (z.B. ✓, Ø) -> ersetzen statt abstürzen
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     sys.exit(main())

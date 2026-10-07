@@ -87,6 +87,21 @@ der Backtest zu optimistisch (Schlupf, Fills), und die Backtest-Ergebnisse oben 
 C ist im Backtest bereits durchgefallen, der Vorwärtstest ist ein Experiment. Er ist kein grünes Licht für echtes Geld.
 Diese Regel wird während des Tests **nicht** geändert.
 
+## Vorfälle während des Vorwärtstests
+
+Hier wird jedes technische Problem mit Datum festgehalten. Die Bestehen-Regel oben bleibt unverändert.
+
+| Datum | Vorfall | Folge | Behebung |
+|---|---|---|---|
+| 07.10.2026 | **Fills früherer Sitzungen nicht erkannt.** IBKR listet unter `/iserver/account/orders` nur Orders der laufenden Sitzung. Limit-Buys, die ausgeführt wurden, während der Bot aus war, galten weiter als „platziert“ (z.B. KO Level 1 @ 85.26, gefüllt am 02.10.). | Positionen und Verkäufe waren korrekt, weil sie direkt bei IBKR abgefragt werden. Im Journal fehlten aber 25 Käufe, darunter ein Level-Kauf von CVS vor dessen Verkauf am 07.10. Der Monatsreport hätte falsch gerechnet. | Der Bot fragt beim Start und bei fehlenden Orders `/iserver/account/trades` ab, archiviert jede Ausführung (`executions.jsonl`) und bucht fehlende Fills mit echtem Datum, Preis und Stückzahl nach. **20** Fills ab dem 01.10. sind exakt nachgebucht. **5** Käufe vom 29./30.09. (ELV, M, MMM, PYPL, LLY) sind bei IBKR nicht mehr abrufbar (nur 7 Tage). Sie werden aus der Position abgeleitet, zum Limitpreis, der Tag ist aus den Yahoo-Tagestiefs geschätzt und im Journal als `estimated` markiert. |
+| 07.10.2026 | **WBD-Position verschwunden** (32 Stück, gekauft am 29.09. zu 30.85), ohne Verkauf durch den Bot. Yahoo liefert keine Kurse mehr. | Das Journal führte 32 WBD, IBKR 0. | **Geklärt:** Übernahme von Warner Bros. Discovery durch Paramount Skydance gegen Bargeld, Abschluss 06.10.2026, **31.01666668 $ je Aktie** (31.00 $ + Tageszulage nach dem 30.09., laut SEC-Unterlagen). Mit `forward_test.py close` als Verkauf (`corporate_action`) gebucht, System geschlossen. Tim prüft die Gutschrift (≈ 992.53 $) im Kontoauszug. |
+| 29.09.–07.10.2026 | **Bot lief nur am 29.09. und am 07.10.** (Laptop-Betrieb: Gateway + Bot + täglicher Browser-Login nötig). | 30.09.–06.10.: keine Trend-Entscheide, keine neuen Einstiege, keine Trend-Verkäufe. Die GTC-Limit-Orders bei IBKR liefen weiter und wurden teils ausgeführt. C weicht in dieser Woche vom Backtest ab (relevant für F4). | Umzug auf einen Server mit IB Gateway + IBC, Tageslauf an jedem NYSE-Handelstag 10:00 und 15:30 New York (`deploy/SERVER.md`). |
+| 07.10.2026 | **Fremde Bestände konnten übernommen werden.** Der Bot übernahm bestehende Positionen als Einstieg und hätte bei einem Trendbruch den ganzen Bestand verkauft, auch Aktien, die nicht von ihm stammen. Fills ohne bekannte Order wurden nachgebucht. | Bisher ohne Schaden: Alle Positionen stammen vom Bot. | Order-Register (`bot_orders.jsonl`, rückwirkend aus `quantdesk.log`): Nur Fills eigener Orders zählen. Verkauft wird höchstens `min(eigene Stück, Bestand)`. Fremde Bestände werden nie übernommen. Abweichungen melden einen Fehler und einen Push. |
+| 29.09.–07.10.2026 | **Keine Handelsberechtigung** für MA, T, C, ADP, ZM (IBKR: „No trading permissions“). | Diese 5 Systeme haben nie gehandelt. | Als `not_tradable` gesperrt, zählen nicht zum Budget und nicht zum Report (Live und Backtest gleich behandelt). Budget jetzt 44 Systeme × 6'000 $ (WBD zählt bis zur Schliessung mit). |
+
+F5 („keine doppelt gebuchten Orders, kein zweiter Einstieg ohne Verkauf dazwischen“) ist durch den ersten Vorfall nicht
+verletzt: Es wurde nichts doppelt gehandelt, nur unvollständig gebucht. Der Vorfall wird trotzdem beim Urteil erwähnt.
+
 ## Phasen
 
 ### Phase 0 – Aufräumen ✅
@@ -107,12 +122,18 @@ Diese Regel wird während des Tests **nicht** geändert.
 - [x] Test: Die Engine macht Tag für Tag dieselben Käufe und Verkäufe wie die Backtest-Simulation
 - [x] `forward_test.py setup` (C-Systeme anlegen) und `forward_test.py report` (Monatsreport)
 
-### Phase 3 – Vorwärtstest von C auf dem Paper-Konto (6 Monate) ⏳ wartet auf Tims Start
-- [ ] Vorbereitung im DRY_RUN: `python forward_test.py setup`, Bot starten, alle C-Zeilen einschalten, einen Tag beobachten
-- [ ] Paper-Konto aufräumen: Aktien aus der Liste, die das Konto schon hält (z.B. die 1 AAPL aus dem Test), verkaufen
-- [ ] **Tim bestätigt den Start** → `QUANTDESK_MODE=PAPER`, Bot neu starten
-- [ ] Bot an Handelstagen laufen lassen (Gateway eingeloggt), monatlich `python forward_test.py report`
-- [ ] Nach 126 Handelstagen: Urteil nach F1–F5
+### Phase 3 – Vorwärtstest von C auf dem Paper-Konto (6 Monate) ⏳ läuft seit 29.09.2026
+- [x] Vorbereitung im DRY_RUN, Start im PAPER-Modus am 29.09.2026
+- [x] Fills früherer Sitzungen nachbuchen, Order-Register, nur eigene Aktien, `not_tradable`, WBD geschlossen
+- [ ] **Server-Betrieb** (`deploy/SERVER.md`, Plan „QuantDesk – IT-Infrastruktur-Plan“): Contabo Cloud VPS 6 (EU,
+      Ubuntu 24.04), Einrichtung über die Web-Konsole, **SSH nur über Tailscale** (Port 22 zu), `deploy/harden.sh`,
+      Docker, IB Gateway + IBC, Dashboard, ntfy
+- [ ] Backups: restic → Backblaze B2, verschlüsselt, täglich nach dem 15:30-Abgleich (30 täglich / 12 monatlich);
+      Restore-Test einmal pro Quartal (`deploy/restore.sh`)
+- [ ] Überwachung von aussen: Healthchecks.io (Ping nach jedem Handelslauf, Alarm wenn bis 11:00 New York keiner kam)
+- [ ] Ab Server-Start: Tageslauf an jedem NYSE-Handelstag 10:00 (Handel) und 15:30 (Abgleich) New York, Push nach jedem Lauf
+- [ ] Monatlich `forward_test.py report` (bzw. im Dashboard: F1–F5)
+- [ ] Nach 126 Handelstagen: Urteil nach F1–F5 (Vorfälle oben beim Urteil erwähnen)
 
 ### Phase 4 – Entscheidung über echtes Geld (Tims Entscheidung)
 - Nur, wenn C den Vorwärtstest besteht, und auch dann ist das nur ein schwaches Signal.

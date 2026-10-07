@@ -1,0 +1,130 @@
+# QuantDesk auf dem Server: IB Gateway (Paper) + Bot (Tageslauf + Backup) + Dashboard (PWA) + ntfy (Push).
+# Start:  cd deploy && docker compose up -d --build
+# Kein Dienst ist öffentlich erreichbar: Dashboard und ntfy hören nur auf 127.0.0.1 und werden über
+# `tailscale serve` ins private Tailscale-Netz gebracht. IB Gateway hat gar keinen Port nach aussen.
+name: quantdesk
+
+x-quantdesk-env: &quantdesk-env
+  QUANTDESK_BROKER: tws
+  TWS_HOST: ib-gateway
+  TWS_PORT: "4004"                     # Paper-API im gnzsnz-Image (intern, nicht veröffentlicht)
+  TWS_CLIENT_ID: "17"
+  QUANTDESK_DATA_FILE: /state/equities.json
+  QUANTDESK_JOURNAL_FILE: /state/journal.jsonl
+  QUANTDESK_EXECUTIONS_FILE: /state/executions.jsonl
+  QUANTDESK_REGISTRY_FILE: /state/bot_orders.jsonl
+  QUANTDESK_DATA_DIR: /state/data
+  QUANTDESK_LOG_FILE: /state/quantdesk.log
+  QUANTDESK_CACHE_DIR: /state/cache
+  NTFY_URL: http://ntfy:80
+
+# für alle Dienste: keine Rechteausweitung, Logs rotieren (max. 3 × 10 MB pro Container)
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  ib-gateway:
+    <<: *hardening
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    mem_limit: 1536m
+    environment:
+      TWS_USERID: ${TWS_USERID}
+      TWS_PASSWORD_FILE: /run/secrets/tws_password
+      TRADING_MODE: paper               # nur Paper – nie "live"
+      READ_ONLY_API: "no"
+      TWS_ACCEPT_INCOMING: reject       # nur Verbindungen aus dem Container selbst (socat) sind vertrauenswürdig
+      TIME_ZONE: America/New_York
+      TZ: America/New_York
+      AUTO_RESTART_TIME: "11:59 PM"     # tägliche Neustart-Zeit, IBC loggt wieder ein
+      TWOFA_TIMEOUT_ACTION: restart
+      RELOGIN_AFTER_TWOFA_TIMEOUT: "yes"
+      EXISTING_SESSION_DETECTED_ACTION: primary
+      JAVA_HEAP_SIZE: "1024"
+      TWS_SETTINGS_PATH: /home/ibgateway/tws_settings
+      # BYPASS_WARNING bewusst NICHT gesetzt: IBKR-Warnungen werden nicht automatisch weggeklickt
+    secrets:
+      - tws_password
+    volumes:
+      - ./state/tws_settings:/home/ibgateway/tws_settings
+
+  ntfy:
+    <<: *hardening
+    image: binwiederhier/ntfy:v2.28.0  # feste Version; Update bewusst: Version hier ändern, dann `docker compose up -d`
+    command: serve
+    mem_limit: 128m
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      NTFY_BASE_URL: ${NTFY_PUBLIC_URL}
+      NTFY_AUTH_FILE: /var/lib/ntfy/user.db
+      NTFY_AUTH_DEFAULT_ACCESS: deny-all   # ohne Login/Token liest und schreibt niemand
+      NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
+      NTFY_BEHIND_PROXY: "true"
+      NTFY_ENABLE_LOGIN: "true"
+    volumes:
+      - ./ntfy-data:/var/lib/ntfy
+    ports:
+      - "127.0.0.1:8090:80"
+
+  bot:
+    <<: *hardening
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: quantdesk:latest
+    command: ["python", "scheduler.py"]
+    mem_limit: 512m
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file: .env
+    environment:
+      <<: *quantdesk-env
+      # Backup (restic -> Backblaze B2), läuft nach dem 15:30-Abgleich
+      RESTIC_PASSWORD_FILE: /run/secrets/restic_password
+      B2_ACCOUNT_KEY_FILE: /run/secrets/b2_account_key
+      RESTIC_CACHE_DIR: /tmp/restic-cache
+      BACKUP_PATHS: /state:/backup/ntfy
+    secrets:
+      - restic_password
+      - b2_account_key
+    volumes:
+      - ./state:/state
+      - ./ntfy-data:/backup/ntfy:ro    # nur lesend, fürs Backup
+    depends_on:
+      - ib-gateway
+      - ntfy
+
+  dashboard:
+    <<: *hardening
+    image: quantdesk:latest
+    command: ["uvicorn", "dashboard.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000",
+              "--proxy-headers", "--forwarded-allow-ips", "*"]
+    mem_limit: 256m
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file: .env
+    environment: *quantdesk-env
+    volumes:
+      - ./state/data:/state/data       # nur den Datenordner (für STOP-ALL beschreibbar)
+    ports:
+      - "127.0.0.1:8080:8000"
+    depends_on:
+      - bot
+
+secrets:
+  tws_password:
+    file: ./secrets/tws_password.txt
+  restic_password:
+    file: ./secrets/restic_password.txt
+  b2_account_key:
+    file: ./secrets/b2_account_key.txt

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>QuantDesk</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>QuantDesk</h1>
+      <p id="subtitle" class="muted">Kandidat C · Vorwärtstest</p>
+    </div>
+    <span id="mode" class="badge">…</span>
+  </header>
+
+  <div id="stop-banner" class="banner danger" hidden>STOP-ALL aktiv – der Bot handelt nicht.</div>
+  <div id="error-banner" class="banner warn" hidden></div>
+
+  <main>
+    <section class="cards">
+      <div class="card"><span class="label">Wert C</span><span id="c-value" class="big">–</span><span id="c-sub" class="muted small"></span></div>
+      <div class="card"><span class="label">Seit Start</span><span id="c-ret" class="big">–</span><span id="spy-ret" class="muted small"></span></div>
+      <div class="card"><span class="label">Investiert</span><span id="c-inv" class="big">–</span><span id="c-cash" class="muted small"></span></div>
+      <div class="card"><span class="label">Letzter Lauf</span><span id="last-run" class="big small-big">–</span><span id="last-run-sub" class="muted small"></span></div>
+    </section>
+
+    <section class="panel">
+      <h2>Kapitalkurve</h2>
+      <svg id="chart" viewBox="0 0 600 240" preserveAspectRatio="none" role="img" aria-label="Kapitalkurve"></svg>
+      <div id="legend" class="legend"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Bestehen-Kriterien <span id="test-state" class="muted small"></span></h2>
+      <ul id="checks" class="checks"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Positionen <span id="pos-count" class="muted small"></span></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Symbol</th><th class="num">Stück</th><th class="num">Ø</th><th class="num">Kurs</th><th class="num">G/V</th><th>Stufen</th></tr></thead>
+          <tbody id="positions"></tbody>
+        </table>
+      </div>
+      <p id="excluded" class="muted small"></p>
+    </section>
+
+    <section class="panel">
+      <h2>Letzte Läufe</h2>
+      <ul id="runs" class="runs"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Verlauf <span class="muted small">Ausführungen, Warnungen, Fehler</span></h2>
+      <ul id="events" class="runs"></ul>
+    </section>
+
+    <section class="panel stop">
+      <h2>Notbremse</h2>
+      <p class="muted small">STOP-ALL schaltet beim nächsten Lauf alle Systeme aus. Offene Orders bleiben bei IBKR.</p>
+      <form id="stop-form" autocomplete="off">
+        <input id="pin" type="password" inputmode="numeric" placeholder="PIN" aria-label="PIN" required>
+        <button type="submit" class="danger">STOP-ALL</button>
+      </form>
+      <p id="stop-msg" class="small"></p>
+    </section>
+
+    <p class="muted small footer">Paper-Trading. Keine Anlageberatung. Stand: <span id="generated">–</span></p>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
