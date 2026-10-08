@@ -29,6 +29,8 @@ from quantdesk.schedule import is_trading_day, ny_today
 from quantdesk.status import (
     STOP_FILE,
     append_jsonl,
+    money,
+    pct,
     build_status,
     data_path,
     read_jsonl,
@@ -100,14 +102,14 @@ def _summary(mode: str, day: dt.date, events, status: dict | None) -> tuple[str,
     lines = [f"{len(fills)} Ausführung(en), {len(placed)} neue Order(s), {len(errors)} Fehler."]
     if status:
         acc = status["c_account"]
-        lines.append(f"C: {acc['value']:,.0f} $ (Budget {acc['budget']:,.0f} $), investiert {acc['invested']:,.0f} $."
-                     .replace(",", "'"))
+        lines.append(f"C: {money(acc.get('value'))} (Budget {money(acc.get('budget'))}), "
+                     f"investiert {money(acc.get('invested'))}.")
         rep = status.get("report")
         if rep:
             live = rep["rows"].get("C live (Paper)", {}).get("USD", {})
             spy = rep["rows"].get("SPY halten", {}).get("USD", {})
             if live and spy:
-                lines.append(f"Seit Start: C {live['total_return']:+.1%} | SPY {spy['total_return']:+.1%}")
+                lines.append(f"Seit Start: C {pct(live.get('total_return'))} | SPY {pct(spy.get('total_return'))}")
     return title, "\n".join(lines)
 
 
@@ -150,6 +152,11 @@ def run(mode: str, force: bool = False, push: bool = True, now: dt.datetime | No
         while not engine.events.empty():
             events.append(engine.events.get())
         authed = True if stopped else engine.status_view.get("authenticated")
+        # Broker-Hinweise (z.B. "nur verzögerte Kurse") einmal pro Lauf statt pro Symbol
+        notices_fn = getattr(getattr(services.marketdata, "broker", None), "notices", None)
+        for note in (notices_fn() if callable(notices_fn) else []):
+            log.info(note)
+            run_row.setdefault("notes", []).append(note)
 
         # Push: jede Ausführung/jeder Verkauf und jeder Fehler einzeln
         for e in events:
@@ -195,6 +202,10 @@ def run(mode: str, force: bool = False, push: bool = True, now: dt.datetime | No
         title, text = _summary(mode, day, events, status)
         if mode == "trade" or run_row["fills"] or run_row["errors"]:
             notifier.send(title, text, "error" if run_row["errors"] else "info")
+        for note in run_row.get("notes", []):
+            text += "\n" + note
+        if notifier.failures:
+            log.warning("Push: %s Nachricht(en) nicht zugestellt (%s)", notifier.failures, notifier.last_error)
         print(text)
         if mode == "trade":
             ping("success" if authed else "fail", text)

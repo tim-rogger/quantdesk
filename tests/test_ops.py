@@ -215,6 +215,26 @@ def test_compose_hardening():
     gw = d["services"]["ib-gateway"]["environment"]
     assert gw["TRADING_MODE"] == "paper" and "BYPASS_WARNING" not in gw and "TWS_PASSWORD" not in gw
     assert set(d["secrets"]) == {"tws_password", "restic_password", "b2_account_key"}
+    # beide eigenen Dienste bauen das Image selbst (nie von Docker Hub pullen) und laufen mit Tims UID
+    for name in ("bot", "dashboard"):
+        svc = d["services"][name]
+        assert svc["build"]["dockerfile"] == "deploy/Dockerfile" and svc["image"] == "quantdesk:latest", name
+        assert svc["user"] == "${QUANTDESK_UID:-1000}:${QUANTDESK_GID:-1000}", name
+        assert svc["environment"]["HOME"] == "/tmp", name
+
+
+def test_prepare_script_sets_owners_and_placeholder_secrets():
+    text = (ROOT / "deploy" / "prepare.sh").read_text(encoding="utf-8")
+    assert "SUDO_UID" in text and "GATEWAY_UID=1000" in text
+    assert 'chown "$GATEWAY_UID:$GATEWAY_UID" secrets/tws_password.txt' in text
+    assert "chown -R \"$GATEWAY_UID:$GATEWAY_UID\" state/tws_settings" in text
+    assert "chmod 400 secrets/*.txt" in text and "QUANTDESK_UID=" in text
+    for name in ("tws_password", "restic_password", "b2_account_key"):
+        assert name in text
+    env = (ROOT / "deploy" / ".env.example").read_text(encoding="utf-8")
+    assert "QUANTDESK_UID=" in env and "QUANTDESK_GID=" in env
+    server = (ROOT / "deploy" / "SERVER.md").read_text(encoding="utf-8")
+    assert "chown -R 1000:1000 state" not in server and "prepare.sh" in server
 
 
 def test_harden_script_never_opens_ssh_port():

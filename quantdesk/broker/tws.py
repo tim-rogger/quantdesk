@@ -23,6 +23,7 @@ from quantdesk.broker.base import (
     BrokerError,
     Execution,
     NotTradableError,
+    UnknownContractError,
     Order,
     OrderResult,
     Position,
@@ -34,17 +35,26 @@ log = logging.getLogger(__name__)
 
 # Reine Info-Meldungen der Verbindung (Marktdaten-Farm ok usw.) – kein Fehler
 INFO_CODES = {2104, 2106, 2107, 2108, 2119, 2150, 2158}
+# "Requested market data is not subscribed. Displaying delayed market data." – erwartet bei Paper ohne Abo
+DELAYED_CODES = {10167, 10168, 354}
+NO_CONTRACT_CODE = 200
+# ib_async setzt nicht gesetzte Zahlen auf sys.float_info.max (UNSET_DOUBLE) bzw. 2**31-1 (UNSET_INTEGER).
+# Alles darüber ist kein echter Wert (keine Aktie kostet 1e12 $, keine Order hat 1e12 Stück).
+MAX_SANE = 1e12
 LIVE = {"Submitted", "PreSubmitted", "Filled"}
 DEAD = {"Cancelled", "ApiCancelled", "Inactive"}
 WAIT_STATUS = {"", "PendingSubmit", "ApiPending"}
 
 
 def _num(value: Any) -> float | None:
+    """Positive, endliche, plausible Zahl – sonst None (auch für die ib_async-Platzhalter UNSET_DOUBLE/INTEGER)."""
     try:
         f = float(value)
     except (TypeError, ValueError):
         return None
-    return None if math.isnan(f) or f <= 0 else f
+    if not math.isfinite(f) or f <= 0 or f >= MAX_SANE:
+        return None
+    return f
 
 
 def _side(action: str) -> str:
@@ -82,14 +92,35 @@ class TwsBroker(Broker):
         self._sleep = sleep or self.ib.sleep
         self._contracts: dict[str, Any] = {}
         self._errors: dict[int, list[tuple[int, str]]] = {}
+        self.delayed_symbols: set[str] = set()  # Kurse nur verzögert (kein Echtzeit-Abo)
+        self.unknown_symbols: set[str] = set()  # keine Kontraktdefinition bei IBKR
         self.ib.errorEvent += self._on_error
+        # ib_async loggt jede IBKR-Meldung selbst als ERROR – das übernehmen wir gesammelt (siehe notices())
+        logging.getLogger("ib_async.wrapper").setLevel(logging.CRITICAL)
 
     # ------------------------------------------------------------ Verbindung
     def _on_error(self, req_id, code, message, contract=None, *args) -> None:
         if code in INFO_CODES:
             return
+        symbol = str(getattr(contract, "symbol", "") or "").replace(" ", ".").upper()
+        if code in DELAYED_CODES:
+            if symbol:
+                self.delayed_symbols.add(symbol)
+            return  # einmal pro Lauf zusammengefasst (notices)
+        if code == NO_CONTRACT_CODE and symbol:
+            self.unknown_symbols.add(symbol)
+            return
         log.warning("IBKR %s (req %s): %s", code, req_id, message)
         self._errors.setdefault(int(req_id), []).append((int(code), str(message)))
+
+    def notices(self) -> list[str]:
+        """Zusammenfassung pro Lauf statt einer Logzeile pro Symbol."""
+        out = []
+        if self.delayed_symbols:
+            out.append(f"Kurse von IBKR nur verzögert (kein Echtzeit-Abo) für {len(self.delayed_symbols)} Symbol(e).")
+        if self.unknown_symbols:
+            out.append(f"Keine Kontraktdefinition bei IBKR: {', '.join(sorted(self.unknown_symbols))}.")
+        return out
 
     def _connect(self) -> None:
         if self.ib.isConnected():
@@ -126,13 +157,16 @@ class TwsBroker(Broker):
     # ------------------------------------------------------------ Kontrakte
     def _contract(self, symbol: str):
         symbol = symbol.upper()
+        if symbol in self.unknown_symbols:
+            raise UnknownContractError(f"IBKR kennt das Symbol {symbol} nicht (keine Kontraktdefinition).")
         if symbol not in self._contracts:
             from ib_async import Stock
 
             self._connect()
-            qualified = self.ib.qualifyContracts(Stock(symbol.replace(".", " "), "SMART", "USD"))
+            qualified = [c for c in self.ib.qualifyContracts(Stock(symbol.replace(".", " "), "SMART", "USD")) if c]
             if not qualified or not getattr(qualified[0], "conId", 0):
-                raise BrokerError(f"IBKR kennt das Symbol {symbol} nicht.")
+                self.unknown_symbols.add(symbol)
+                raise UnknownContractError(f"IBKR kennt das Symbol {symbol} nicht (keine Kontraktdefinition).")
             self._contracts[symbol] = qualified[0]
         return self._contracts[symbol]
 
@@ -169,10 +203,10 @@ class TwsBroker(Broker):
             return None
         fills = list(getattr(trade, "fills", []) or [])
         last_fill = max((_ts(f.time) or 0 for f in fills), default=0) or None
-        filled = float(getattr(st, "filled", 0) or getattr(o, "filledQuantity", 0) or 0) or None
-        status = st.status or ""
-        if status == "Filled" or (filled and filled >= float(o.totalQuantity or 0) and status not in DEAD):
-            status = "Filled"
+        # Gefüllte Menge: erst der Orderstatus, dann Order.filledQuantity – beide nur, wenn es echte Werte sind
+        # (Order.filledQuantity ist bei offenen Orders der Platzhalter UNSET_DOUBLE = 1.8e308!)
+        filled = _num(getattr(st, "filled", None)) or _num(getattr(o, "filledQuantity", None))
+        status = st.status or ""  # der von IBKR gemeldete Status zählt, nie aus der Menge abgeleitet
         return Order(
             order_id=str(perm),
             symbol=trade.contract.symbol.replace(" ", ".").upper(),

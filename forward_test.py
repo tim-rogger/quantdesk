@@ -47,71 +47,14 @@ def cmd_setup(args, settings) -> int:
 
 
 def cmd_migrate(args, settings) -> int:
-    """Einmalig: Order-Register aus quantdesk.log/Journal füllen, Fills früherer Sitzungen nachbuchen.
-    Muss bei GESTOPPTEM Bot laufen. Platziert keine Orders (Abgleichslauf)."""
-    import os
-    import shutil
-    import time
+    """Altbestand nachtragen: Register, entry_qty, Level-Mengen, Berechtigungen; Journal bereinigen; Abgleichslauf.
+    Bot dabei stoppen. Platziert keine Orders. Mit --dry-run nur auf Kopien (nichts wird geschrieben)."""
+    from quantdesk.migrate import migrate
 
-    from quantdesk.app import build_services
-    from quantdesk.registry import BotOrder, OrderRegistry, orders_from_log
-
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    for path in (settings.data_file, settings.journal_file, settings.registry_file):
-        if os.path.exists(path):
-            shutil.copy2(path, f"{path}.vor-migration-{stamp}")
-    registry = OrderRegistry(settings.registry_file)
-    added = 0
-    if os.path.exists(args.log):
-        with open(args.log, encoding="utf-8", errors="replace") as f:
-            for order in orders_from_log(f):
-                added += registry.add(order)
-    # Orders, die nur im Zustand bzw. Journal stehen (z.B. Log rotiert)
-    for s in c_systems(settings.data_file):
-        for lv in s.levels:
-            if lv.order_id and not lv.order_id.startswith("DRY-"):
-                added += registry.add(BotOrder(lv.order_id, s.symbol, "level", "BUY", float(lv.qty or round(s.order_usd / lv.price)),
-                                               lv.level, lv.price))
-    for f in Journal(settings.journal_file).read():
-        if f.kind in ("entry", "level", "exit") and f.order_id not in ("bestand", ""):
-            added += registry.add(BotOrder(f.order_id, f.symbol, f.kind, f.side, f.qty))
-    print(f"Order-Register: {added} Orders neu erfasst, insgesamt {len(registry.all())}.")
-
-    # Symbole ohne Handelsberechtigung (aus abgelehnten Orders im Log) sperren
-    from quantdesk import storage
-    from quantdesk.registry import not_tradable_from_log
-
-    blocked = set()
-    if os.path.exists(args.log):
-        with open(args.log, encoding="utf-8", errors="replace") as f:
-            blocked = not_tradable_from_log(f)
-    systems = storage.load(settings.data_file)
-    newly = sorted(sym for sym in blocked if sym in systems and not systems[sym].not_tradable)
-    for sym in newly:
-        systems[sym].not_tradable = True
-    if newly:
-        storage.save(settings.data_file, systems)
-    print(f"Ohne Handelsberechtigung gesperrt: {', '.join(newly) or 'keine neuen'}")
-
-    services = build_services(settings, infer_missing=True)
-    engine = services.engine
-    journal_before = len(engine.journal.read())
-    engine.run_once(decide=False)
-    services.broker.close()
-    events = []
-    while not engine.events.empty():
-        events.append(engine.events.get())
-    booked = [e.message for e in events if "nachgebucht" in e.message or "gefüllt am" in e.message or "abgeleitet" in e.message]
-    problems = [e.message for e in events if e.level == "error"]
-    print(f"Journal: {journal_before} -> {len(engine.journal.read())} Einträge.")
-    for m in booked:
-        print("  " + m)
-    if problems:
-        print("\nNicht auflösbar – bitte prüfen:")
-        for m in problems:
-            print("  - " + m)
-    print(f"\nSicherungen: *.vor-migration-{stamp}")
-    return 1 if problems else 0
+    report = migrate(settings, args.log, dry_run=args.dry_run)
+    for line in report.lines():
+        print(line)
+    return 1 if report.unresolved else 0
 
 
 def cmd_close(args, settings) -> int:
@@ -219,7 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     t = sub.add_parser("import-trades", help="gespeicherte IBKR-Ausführungen ins Archiv übernehmen")
     t.add_argument("file", help="JSON-Antwort von /iserver/account/trades")
     m = sub.add_parser("migrate", help="einmalig: Order-Register füllen, Fills früherer Sitzungen nachbuchen")
-    m.add_argument("--log", default="quantdesk.log", help="Log mit den platzierten Orders")
+    m.add_argument("--log", default=None, help="Log mit den platzierten Orders (Standard: QUANTDESK_LOG_FILE)")
+    m.add_argument("--dry-run", action="store_true", help="nur auf Kopien rechnen und berichten, nichts schreiben")
     c = sub.add_parser("close", help="System nach Firmenereignis schliessen (z.B. Übernahme gegen Bargeld)")
     c.add_argument("symbol")
     c.add_argument("--price", type=float, required=True, help="Abfindung bzw. Erlös pro Aktie in $")
@@ -228,6 +172,10 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--note", required=True, help="Erklärung fürs Journal")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     settings = load_settings()
+    if args.cmd == "migrate" and not args.log:
+        import os
+
+        args.log = os.getenv("QUANTDESK_LOG_FILE", "quantdesk.log")
     commands = {"setup": cmd_setup, "report": cmd_report, "import-trades": cmd_import_trades,
                 "migrate": cmd_migrate, "close": cmd_close}
     return commands[args.cmd](args, settings)

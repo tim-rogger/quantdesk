@@ -151,14 +151,26 @@ Ausfüllen: `TWS_USERID` (dein **Paper**-Benutzer), `IBKR_ACCOUNT_ID=DUO844164`,
 `NTFY_PUBLIC_URL=https://quantdesk.dein-tailnet.ts.net:8443`, die Backup-Werte (Abschnitt 10) und `HEALTHCHECKS_URL`
 (Abschnitt 11). `QUANTDESK_MODE=DRY_RUN` lassen.
 
-Secrets als Dateien (je eine Zeile, nur der Wert):
+**Pflicht vor dem ersten Start: die drei Secret-Dateien.** Fehlt eine, startet `docker compose` gar nicht.
+Je eine Zeile, nur der Wert:
 ```bash
-$ mkdir -p secrets && chmod 700 secrets
+$ mkdir -p secrets
 $ nano secrets/tws_password.txt        # Paper-Passwort
 $ nano secrets/restic_password.txt     # langes Zufalls-Passwort fürs Backup (aus dem Passwortmanager generieren)
 $ nano secrets/b2_account_key.txt      # applicationKey von Backblaze (Abschnitt 10)
-$ chmod 600 secrets/*
+$ sudo ./prepare.sh
 ```
+`prepare.sh` richtet Ordner und Rechte ein und kann beliebig oft laufen:
+- Es erkennt deine UID (`id -u`; auf Contabo oft **1001**, weil 1000 schon vergeben ist) und trägt sie als
+  `QUANTDESK_UID`/`QUANTDESK_GID` in `.env` ein. Bot und Dashboard laufen dann mit deiner UID, und `state/` gehört dir.
+  Deshalb funktioniert `scp` in Schritt 8 ohne `sudo`.
+- **IB Gateway** läuft im Image als UID **1000** (`ibgateway`). Deshalb gehören `secrets/tws_password.txt` und
+  `state/tws_settings/` der UID 1000. Die Datei hat Modus **400**, also darf nur dieser Benutzer sie lesen.
+  Ein `chmod 644` ist **nicht** nötig.
+- Die beiden Backup-Secrets gehören dir (Modus 400). Der Bot liest sie mit deiner UID.
+- Fehlt eine Secret-Datei, legt es sie **leer** an und warnt. Danach füllen (`sudo nano secrets/…`, weil die Datei
+  nur lesbar ist) und `sudo ./prepare.sh` nochmals laufen lassen.
+
 **Ohne `restic_password.txt` gibt es kein Backup – und ohne dieses Passwort lässt sich ein Backup nie wieder öffnen.**
 
 ## 8. Laufzeitdaten vom Laptop übernehmen
@@ -166,7 +178,6 @@ $ chmod 600 secrets/*
 **Zuerst den Bot auf dem Laptop beenden** (Fenster schliessen) und das lokale Gateway stoppen. Dann vom Laptop:
 ```powershell
 PS> cd C:\Users\tim07\dev\workspace\03_finance\quantdesk
-PS> ssh tim@quantdesk "mkdir -p ~/quantdesk/deploy/state/data"
 PS> scp equities.json journal.jsonl executions.jsonl bot_orders.jsonl quantdesk.log tim@quantdesk:~/quantdesk/deploy/state/
 ```
 
@@ -174,7 +185,7 @@ PS> scp equities.json journal.jsonl executions.jsonl bot_orders.jsonl quantdesk.
 
 ```bash
 $ cd ~/quantdesk/deploy
-$ mkdir -p state/tws_settings state/cache ntfy-data && sudo chown -R 1000:1000 state
+$ sudo ./prepare.sh                    # nach dem scp nochmals: Rechte stimmen sicher
 $ docker compose up -d --build
 $ docker compose logs -f ib-gateway    # warten bis "Login has completed", dann Strg+C
 ```
@@ -270,10 +281,12 @@ Zusätzlich schickt der Server selbst um 11:00 New York einen Push, wenn der Han
 | Lauf sofort | `docker compose exec bot python run_daily.py trade --force` |
 | Monatsreport | `docker compose exec bot python forward_test.py report` |
 | STOP-ALL aufheben | `rm state/data/STOP` (nach STOP-ALL im Dashboard) |
-| Update | `git pull && docker compose up -d --build` |
+| Update | `git pull && sudo ./prepare.sh && docker compose up -d --build` |
 | Backup-Stände | `docker compose exec bot python -m quantdesk.backup snapshots` |
 
 **Wenn etwas nicht geht:**
+- *„Permission denied“ bei `tws_password` oder in `state/`* → `sudo ./prepare.sh` setzt Besitzer und Rechte neu.
+- *„pull access denied for quantdesk“* → `docker compose up -d --build` (das Image wird lokal gebaut, nie gepullt).
 - *„IB Gateway nicht erreichbar“* → `docker compose logs ib-gateway`: Login fehlgeschlagen? Passwort in
   `secrets/tws_password.txt` prüfen, 2FA in IBKR Mobile bestätigen.
 - *„Konto abgelehnt: nur Paper-Konten“* → In `.env` steht kein `DU…`-Konto oder der Live-Benutzer. Richtig ist der Paper-Login.
