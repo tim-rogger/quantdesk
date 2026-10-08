@@ -357,3 +357,20 @@ def test_migrate_cleans_and_following_reconcile_has_no_errors(tmp_path, monkeypa
     assert [(f.kind, f.qty) for f in Journal(settings.journal_file).read()] == [("entry", 11), ("level", 12)]
     assert Journal(settings.journal_file).read()[1].estimated
     assert b.placed == []
+
+
+def test_close_refuses_legacy_state_and_is_idempotent(tmp_path, monkeypatch, capsys):
+    import forward_test
+
+    env(tmp_path, monkeypatch)
+    s = EquitySystem("WBD", 5, 0.02, status="On", trend_sma=200, trend_exit=True, order_usd=1000, entry_price=30.85,
+                     blocked="keine Kontraktdefinition bei IBKR (Übernahme/Delisting?)")
+    storage.save(str(tmp_path / "eq.json"), {"WBD": s})
+    args = ["close", "WBD", "--price", "31.01666668", "--date", "2026-10-06", "--note", "Übernahme"]
+    assert forward_test.main(args) == 1 and "zuerst 'forward_test.py migrate'" in capsys.readouterr().out
+    s.entry_qty = 32
+    storage.save(str(tmp_path / "eq.json"), {"WBD": s})
+    assert forward_test.main(args) == 0 and forward_test.main(args) == 0
+    assert [f.qty for f in Journal(str(tmp_path / "j.jsonl")).read()] == [32]
+    w = storage.load(str(tmp_path / "eq.json"))["WBD"]
+    assert w.closed == "Übernahme" and w.blocked is None

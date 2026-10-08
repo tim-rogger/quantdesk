@@ -272,6 +272,29 @@ Zusätzlich schickt der Server selbst um 11:00 New York einen Push, wenn der Han
 
 ---
 
+## Einmalig: Update nach dem ersten Server-Lauf (08.10.2026)
+
+Der erste Lauf hat 27 Symbole wegen eines Adapter-Fehlers gesperrt (`bot_qty = inf`). Die Reihenfolge ist wichtig:
+`migrate` gibt es erst im neuen Code, also **nach** `git pull` und `build`, aber **bevor** der Bot wieder läuft.
+```bash
+$ cd ~/quantdesk/deploy
+$ docker compose stop bot                                           # Bot aus, Zustand nicht mehr anfassen
+$ git pull
+$ sudo ./prepare.sh                                                 # UID, Rechte, Secrets
+$ docker compose build
+$ docker compose run --rm bot python forward_test.py migrate --dry-run   # nur Bericht, schreibt nichts
+$ docker compose run --rm bot python forward_test.py migrate             # Sicherung *.vor-migration-*, dann bereinigen
+$ docker compose run --rm bot python forward_test.py close WBD --price 31.01666668 --date 2026-10-06 --note "Übernahme durch Paramount Skydance, 31.0167 $ bar je Aktie"
+$ docker compose run --rm bot python run_daily.py reconcile --force --no-push   # muss mit „0 Fehler“ enden
+$ docker compose up -d
+```
+Im Bericht von `migrate` ist **nur WBD** als „nicht zuordenbar“ zu erwarten (das erledigt `close`). Steht dort noch
+etwas anderes: **nicht** weitermachen, Bericht an Claude schicken. Notweg: die unveränderten Dateien vom Laptop
+(`equities.json`, `journal.jsonl`, `executions.jsonl`, `quantdesk.log`) nochmals per `scp` nach `state/` kopieren,
+`state/bot_orders.jsonl` löschen und `migrate` wiederholen.
+
+---
+
 ## Alltag
 
 | Was | Befehl (auf dem Server, in `~/quantdesk/deploy`) |

@@ -67,6 +67,13 @@ def cmd_close(args, settings) -> int:
     if s is None:
         print(f"{args.symbol}: kein System in {settings.data_file}")
         return 1
+    if s.closed:
+        print(f"{s.symbol}: bereits geschlossen ({s.closed}) – nichts gebucht.")
+        return 0
+    if args.qty is None and s.entry_price is not None and s.accounted_qty() is None:
+        print(f"{s.symbol}: eigene Stückzahl unbekannt (Altformat) – zuerst 'forward_test.py migrate' ausführen "
+              "oder --qty angeben.")
+        return 1
     qty = args.qty if args.qty is not None else s.bot_qty()
     journal = Journal(settings.journal_file)
     when = None
@@ -81,6 +88,7 @@ def cmd_close(args, settings) -> int:
     s.reset_trading_state()
     s.status = "Off"
     s.closed = args.note
+    s.blocked = None  # geschlossen ersetzt eine Sperre (z.B. "keine Kontraktdefinition")
     storage.save(settings.data_file, systems)
     print(f"{s.symbol}: {qty:g} Stück zu {args.price} als '{args.note}' gebucht, System geschlossen.")
     return 0
