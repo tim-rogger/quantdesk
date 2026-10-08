@@ -6,6 +6,7 @@ Jedes Level wird genau einmal platziert.
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Iterable
@@ -56,6 +57,32 @@ def parse_grid_input(symbol: str, levels: str, drawdown_pct: str) -> tuple[str, 
         raise ValidationError("Drawdown % muss eine Zahl sein (z.B. 2).") from None
     validate_grid(num_levels, drawdown)
     return sym, num_levels, drawdown
+
+
+# Harte Plausibilitätsgrenzen: alles darüber ist ein Fehler (z.B. ib_async-Platzhalter 1.8e308), nie ein echter Wert
+MAX_QTY = 1e7
+MAX_PRICE = 1e6
+
+
+def sane_qty(x) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and 0 < x < MAX_QTY
+
+
+def sane_price(x) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and 0 < x < MAX_PRICE
+
+
+def _finite_or_none(x):
+    return x if not isinstance(x, float) or math.isfinite(x) else None
+
+
+def _clean(obj):
+    """Rekursiv: nicht endliche Zahlen -> None (damit nie nan/inf in eine Datei gelangt)."""
+    if isinstance(obj, dict):
+        return {k: _clean(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean(v) for v in obj]
+    return _finite_or_none(obj)
 
 
 def level_price(entry_price: float, drawdown: float, i: int) -> float:
@@ -112,6 +139,7 @@ class EquitySystem:
     sold_qty: float = 0.0  # im laufenden Zyklus schon verkaufte eigene Stück (Teilverkauf)
     not_tradable: bool = False  # IBKR: keine Handelsberechtigung -> wird nicht gehandelt, nicht im Budget
     closed: str | None = None  # Grund, wenn das System endgültig geschlossen ist (z.B. Übernahme)
+    blocked: str | None = None  # gesperrt bis geklärt (ungültige Werte, keine Kontraktdefinition) – mit Grund
 
     def __post_init__(self):
         validate_grid(self.num_levels, self.drawdown)
@@ -163,50 +191,82 @@ class EquitySystem:
         self.sold_qty = 0.0
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        return _clean(asdict(self))
 
     @classmethod
     def from_dict(cls, d: dict) -> "EquitySystem":
-        levels = d.get("levels") or []
-        if not isinstance(levels, list):
+        levels_raw = d.get("levels") or []
+        if not isinstance(levels_raw, list):
             raise ValueError("'levels' muss eine Liste sein (altes Format aus dem Video wird nicht unterstützt).")
-        entry = d.get("entry_price")
+        problems: list[str] = []
+
+        def num(name, value, check):
+            """Zahl übernehmen, wenn sie plausibel ist; sonst verwerfen und als Problem merken."""
+            if value is None:
+                return None
+            try:
+                f = float(value)
+            except (TypeError, ValueError):
+                problems.append(f"{name}={value!r}")
+                return None
+            if not check(f):
+                problems.append(f"{name}={value!r}")
+                return None
+            return f
+
+        levels = []
+        for x in levels_raw:
+            lv = Level.from_dict({**x, "qty": None, "price": x.get("price") or 0})
+            lv.qty = num(f"Level {lv.level} qty", x.get("qty"), sane_qty)
+            if not sane_price(lv.price):
+                problems.append(f"Level {lv.level} price={x.get('price')!r}")
+            if lv.status == FILLED and lv.qty is None and x.get("qty") is not None:
+                lv.status = PLACED  # Menge ungültig -> Zustand unbekannt, der Abgleich klärt es
+            levels.append(lv)
+        entry = num("entry_price", d.get("entry_price"), sane_price)
+        sold = num("sold_qty", d.get("sold_qty") or None, sane_qty) or 0.0
+        blocked = d.get("blocked")
+        if problems:
+            blocked = "ungültige Werte im Zustand verworfen: " + ", ".join(problems[:5])
         return cls(
             symbol=str(d["symbol"]).upper(),
             num_levels=int(d["num_levels"]),
             drawdown=float(d["drawdown"]),
             status=ON if d.get("status") == ON else OFF,
-            position=float(d.get("position") or 0),
-            entry_price=float(entry) if entry is not None else None,
+            position=num("position", d.get("position") or None, lambda f: math.isfinite(f) and abs(f) < MAX_QTY) or 0.0,
+            entry_price=entry,
             entry_order_id=d.get("entry_order_id"),
             entry_order_time=d.get("entry_order_time"),
-            levels=[Level.from_dict(x) for x in levels],
+            levels=levels,
             simulated=bool(d.get("simulated", False)),
             trend_sma=int(d["trend_sma"]) if d.get("trend_sma") else None,
             trend_exit=bool(d.get("trend_exit", False)),
             order_usd=float(d["order_usd"]) if d.get("order_usd") else None,
             exit_order_id=d.get("exit_order_id"),
             exit_order_time=d.get("exit_order_time"),
-            entry_qty=float(d["entry_qty"]) if d.get("entry_qty") is not None else None,
+            entry_qty=num("entry_qty", d.get("entry_qty"), sane_qty),
             entry_ts=d.get("entry_ts"),
-            sold_qty=float(d.get("sold_qty") or 0.0),
+            sold_qty=sold,
             not_tradable=bool(d.get("not_tradable", False)),
             closed=d.get("closed"),
+            blocked=blocked,
         )
 
     @property
     def tradable(self) -> bool:
-        return not self.not_tradable and not self.closed
+        return not self.not_tradable and not self.closed and not self.blocked
 
     def bot_qty(self) -> float:
-        """Eigene Stück laut Fills (Einstieg + gefüllte Levels - verkauft). Fremde Bestände zählen nie."""
-        return max((self.accounted_qty() or 0.0) - self.sold_qty, 0.0)
+        """Eigene Stück laut Fills (Einstieg + gefüllte Levels - verkauft). Fremde Bestände zählen nie.
+        Immer endlich: unplausible Werte zählen nicht."""
+        own = (self.accounted_qty() or 0.0) - (self.sold_qty if sane_qty(self.sold_qty) else 0.0)
+        return own if math.isfinite(own) and own > 0 else 0.0
 
     def accounted_qty(self) -> float | None:
         """Stückzahl laut eigener Buchführung (Einstieg + gefüllte Levels). None = Einstieg unbekannt."""
-        if self.entry_qty is None:
+        if not sane_qty(self.entry_qty):
             return None
-        return self.entry_qty + sum(lv.qty or 0.0 for lv in self.levels if lv.status == FILLED)
+        return self.entry_qty + sum(lv.qty for lv in self.levels if lv.status == FILLED and sane_qty(lv.qty))
 
 
 def find_level_order(level: Level, symbol: str, orders: Iterable[Order], tol: float = PRICE_TOLERANCE) -> Order | None:

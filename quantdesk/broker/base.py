@@ -24,6 +24,10 @@ class NotTradableError(BrokerError):
     """IBKR lehnt die Order ab, weil das Konto dieses Symbol nicht handeln darf (fehlende Handelsberechtigung)."""
 
 
+class UnknownContractError(BrokerError):
+    """IBKR kennt das Symbol nicht (keine Kontraktdefinition, z.B. nach Übernahme/Delisting)."""
+
+
 def is_permission_error(message: str) -> bool:
     text = message.lower()
     return "permission" in text or "berechtigung" in text or "not allowed to trade" in text

@@ -16,7 +16,15 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from quantdesk import storage
-from quantdesk.broker.base import LOGIN_HINT, Broker, BrokerError, NotTradableError, Order, Position
+from quantdesk.broker.base import (
+    LOGIN_HINT,
+    Broker,
+    BrokerError,
+    NotTradableError,
+    Order,
+    Position,
+    UnknownContractError,
+)
 from quantdesk.executions import ExecutionArchive, OrderFill, aggregate
 from quantdesk.history import Bar
 from quantdesk.journal import Journal
@@ -32,6 +40,8 @@ from quantdesk.strategy import (
     PLACED,
     EquitySystem,
     ValidationError,
+    sane_price,
+    sane_qty,
 )
 
 log = logging.getLogger(__name__)
@@ -100,6 +110,10 @@ class Engine:
             self._emit("error", str(e))
         self._drop_simulated_state()
         self._migrate_from_journal()
+        for s in self.systems.values():
+            if s.blocked:
+                self._emit("error", f"{s.symbol}: gesperrt – {s.blocked}. Klären mit 'forward_test.py migrate'.",
+                           s.symbol, key=f"blocked:{s.symbol}")
         if self.journal is not None:
             try:
                 self._booked = self.journal.order_ids()
@@ -127,7 +141,7 @@ class Engine:
     def _save(self) -> None:
         try:
             storage.save(self.data_file, self.systems)
-        except OSError as e:
+        except (OSError, ValueError) as e:
             self._emit("error", f"Konnte {self.data_file} nicht speichern: {e}", key="save")
 
     def _publish(self) -> None:
@@ -298,9 +312,12 @@ class Engine:
         self._keepalive()
         authed = self._check_auth()
         with self._lock:
-            symbols = list(self.systems)
+            symbols = [s.symbol for s in self.systems.values() if s.tradable or s.bot_qty() > 0]
             active = [s.symbol for s in self.systems.values() if s.is_on and s.tradable]
         self._refresh_quotes(symbols)
+        self._block_unknown_contracts()
+        with self._lock:
+            active = [sym for sym in active if self.systems[sym].tradable]
         if authed:
             self._refresh_cash()
         if not authed or self.paused or not active:
@@ -334,6 +351,20 @@ class Engine:
                 self._save()
             self._publish()
         self._finish_cycle()
+
+    def _block_unknown_contracts(self) -> None:
+        """Symbole, für die IBKR keine Kontraktdefinition hat (z.B. nach Übernahme), dauerhaft sperren."""
+        unknown = set(getattr(getattr(self.marketdata, "broker", None), "unknown_symbols", ()) or ())
+        if not unknown:
+            return
+        with self._lock:
+            for sym in unknown:
+                s = self.systems.get(sym)
+                if s is not None and not s.blocked and not s.closed:
+                    s.blocked = "keine Kontraktdefinition bei IBKR (Übernahme/Delisting?)"
+                    self._emit("error", f"{sym}: {s.blocked} – System gesperrt, wird nicht mehr angefragt. "
+                                        "Abschliessen mit 'forward_test.py close'.", sym)
+            self._save()
 
     def _trend_states(self, symbols: list[str]) -> dict[str, bool | None]:
         """Trendfilter pro Symbol (Netzwerk, deshalb ausserhalb des Locks)."""
@@ -376,9 +407,10 @@ class Engine:
         """Stückzahl: fester Dollarbetrag wie im Backtest (gerundet, mind. 1) oder feste Stückzahl."""
         if s.order_usd is None:
             return self.order_qty
-        if not price or price <= 0:
-            return None
-        return max(1, round(s.order_usd / price))
+        if not sane_price(price):
+            return None  # kein (gültiger) Preis -> diese Runde nicht rechnen
+        qty = max(1, round(s.order_usd / price))
+        return qty if sane_qty(qty) else None
 
     def _record(self, s: EquitySystem, side: str, qty: float, price: float, kind: str, order: Order | None,
                 order_id: str, when: float | None = None, estimated: bool = False, exec_ids=(), note: str = "") -> None:
@@ -388,6 +420,8 @@ class Engine:
             simulated = s.simulated or (order.simulated if order else False) or str(order_id).startswith("DRY-")
             self.journal.record(s.symbol, side, qty, price, kind, order_id, simulated, when=when, estimated=estimated,
                                 exec_ids=exec_ids, note=note)
+        except ValueError as e:
+            self._emit("error", f"Journal: {e}", s.symbol, key=f"journal:{order_id}")
         except OSError as e:
             self._emit("error", f"Journal nicht schreibbar: {e}", key="journal")
 
@@ -470,7 +504,18 @@ class Engine:
 
     # --- Abgleich -------------------------------------------------------
     def _done(self, order_id: str, by_id: dict[str, Order], fills: dict[str, OrderFill]):
-        """Zustand einer eigenen Order: ('open'|'filled'|'cancelled'|'unknown', Menge, Preis, Zeit)."""
+        """Zustand einer eigenen Order: ('open'|'filled'|'cancelled'|'unknown', Menge, Preis, Zeit).
+        Eine Ausführung mit unplausibler Menge gilt nie als gefüllt (z.B. Platzhalter 1.8e308 von ib_async)."""
+        state = self._done_raw(order_id, by_id, fills)
+        if state[0] == "filled" and not sane_qty(state[1]):
+            self._emit("error", f"Order {order_id}: unplausible Menge {state[1]!r} von IBKR – nicht gebucht.",
+                       key=f"insane:{order_id}")
+            return "unknown", 0.0, None, None
+        if state[2] is not None and not sane_price(state[2]):
+            return state[0], state[1], None, state[3]
+        return state
+
+    def _done_raw(self, order_id: str, by_id: dict[str, Order], fills: dict[str, OrderFill]):
         o, f = by_id.get(order_id), fills.get(order_id)
         if o is not None:
             if o.is_filled:
@@ -492,10 +537,13 @@ class Engine:
 
     def _fill_price(self, s: EquitySystem, price: float | None, fallback: float | None) -> tuple[float, bool]:
         """(Preis, geschätzt?) – ohne gemeldeten Preis: Limitpreis bzw. letzter Kurs."""
-        if price:
+        if sane_price(price):
             return float(price), False
         quote = self.quotes.get(s.symbol)
-        return float(fallback or (quote.price if quote else 0.0)), True
+        for candidate in (fallback, quote.price if quote else None):
+            if sane_price(candidate):
+                return float(candidate), True
+        return None, True
 
     def _sync_entry(self, s: EquitySystem, by_id: dict[str, Order], fills: dict[str, OrderFill]) -> None:
         if s.entry_price is not None or not s.entry_order_id:
@@ -503,6 +551,10 @@ class Engine:
         state, qty, price, ts = self._done(s.entry_order_id, by_id, fills)
         if state == "filled":
             price, estimated = self._fill_price(s, price, None)
+            if price is None:
+                self._emit("warn", f"{s.symbol}: Einstieg gefüllt, aber kein Preis bekannt – Buchung beim nächsten Lauf.",
+                           s.symbol, key=f"noprice:{s.symbol}")
+                return
             s.entry_price, s.entry_qty, s.entry_ts = round(price, 2), qty, ts or self._clock()
             self._book(s, "BUY", qty, price, "entry", s.entry_order_id, ts, estimated, fills)
             self._emit("order", f"{s.symbol}: Einstieg gefüllt ({qty:g} @ {price:.2f}), Einstiegspreis {s.entry_price:.2f}.",
@@ -536,6 +588,10 @@ class Engine:
         state, qty, price, ts = self._done(s.exit_order_id, by_id, fills)
         if state == "filled":
             price, estimated = self._fill_price(s, price, None)
+            if price is None:
+                self._emit("warn", f"{s.symbol}: Verkauf gefüllt, aber kein Preis bekannt – Buchung beim nächsten Lauf.",
+                           s.symbol, key=f"noprice:{s.symbol}")
+                return
             self._book(s, "SELL", qty, price, "exit", s.exit_order_id, ts, estimated, fills)
             s.sold_qty += qty
             s.exit_order_id = s.exit_order_time = None
@@ -574,8 +630,12 @@ class Engine:
 
     def _book(self, s: EquitySystem, side: str, qty: float, price: float, kind: str, order_id: str,
               when: float | None, estimated: bool, fills: dict[str, OrderFill], note: str = "") -> bool:
-        """Journal-Eintrag genau einmal pro Order (idempotent)."""
+        """Journal-Eintrag genau einmal pro Order (idempotent). Unplausible Werte werden nie gebucht."""
         if order_id in self._booked:
+            return False
+        if not sane_qty(qty) or not sane_price(price):
+            self._emit("error", f"{s.symbol}: Fill {order_id} mit unplausibler Menge/Preis ({qty!r} @ {price!r}) – "
+                                "nicht gebucht.", s.symbol, key=f"insane:{order_id}")
             return False
         f = fills.get(order_id)
         self._record(s, side, qty, price, kind, None, order_id, when=when, estimated=estimated,
@@ -651,11 +711,15 @@ class Engine:
             s.not_tradable = True
             self._emit("error", f"{s.symbol}: keine Handelsberechtigung – System wird nicht mehr gehandelt ({e}).", s.symbol)
             return None
+        except UnknownContractError as e:
+            s.blocked = "keine Kontraktdefinition bei IBKR (Übernahme/Delisting?)"
+            self._emit("error", f"{s.symbol}: {e} – System gesperrt.", s.symbol)
+            return None
         for msg in result.messages:
             if msg != "DRY_RUN":
                 self._emit("warn", f"{s.symbol}: IBKR-Hinweis zu Order {result.order_id}: {msg}", s.symbol)
         s.simulated = s.simulated or result.order_id.startswith("DRY-")
-        if self.registry is not None:
+        if self.registry is not None and not result.order_id.startswith("DRY-"):
             self.registry.add(BotOrder(result.order_id, s.symbol, kind, side.upper(), float(qty), level, price, self._clock()))
         return result.order_id
 
@@ -677,6 +741,10 @@ class Engine:
             if lv.status != PENDING:
                 continue
             qty = self._qty(s, lv.price)
+            if qty is None:
+                self._emit("warn", f"{s.symbol}: Level {lv.level} ohne gültigen Preis – diese Runde übersprungen.", s.symbol,
+                           key=f"size:{s.symbol}")
+                return
             order_id = self._place(s, LEVEL, "BUY", qty, lv.price, lv.level)
             if order_id is None:
                 return

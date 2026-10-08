@@ -1,5 +1,8 @@
 # QuantDesk auf dem Server: IB Gateway (Paper) + Bot (Tageslauf + Backup) + Dashboard (PWA) + ntfy (Push).
-# Start:  cd deploy && docker compose up -d --build
+# Start:  cd deploy && sudo ./prepare.sh && docker compose up -d --build
+# Rechte: Bot und Dashboard laufen mit DEINER UID (QUANTDESK_UID/GID in .env, prepare.sh trägt sie ein), damit
+# du Dateien in state/ per scp ablegen und lesen kannst. IB Gateway läuft im Image als UID 1000 (ibgateway) –
+# deshalb gehören tws_password.txt und state/tws_settings der UID 1000 (prepare.sh setzt das).
 # Kein Dienst ist öffentlich erreichbar: Dashboard und ntfy hören nur auf 127.0.0.1 und werden über
 # `tailscale serve` ins private Tailscale-Netz gebracht. IB Gateway hat gar keinen Port nach aussen.
 name: quantdesk
@@ -17,6 +20,15 @@ x-quantdesk-env: &quantdesk-env
   QUANTDESK_LOG_FILE: /state/quantdesk.log
   QUANTDESK_CACHE_DIR: /state/cache
   NTFY_URL: http://ntfy:80
+  HOME: /tmp                           # beliebige UID: kein eigenes Home im Image nötig
+
+# ein Image für Bot und Dashboard; beide mit build-Abschnitt, damit Compose nie versucht, es zu pullen
+x-quantdesk-image: &quantdesk-image
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  image: quantdesk:latest
+  user: "${QUANTDESK_UID:-1000}:${QUANTDESK_GID:-1000}"
 
 # für alle Dienste: keine Rechteausweitung, Logs rotieren (max. 3 × 10 MB pro Container)
 x-hardening: &hardening
@@ -75,11 +87,7 @@ services:
       - "127.0.0.1:8090:80"
 
   bot:
-    <<: *hardening
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    image: quantdesk:latest
+    <<: [*hardening, *quantdesk-image]
     command: ["python", "scheduler.py"]
     mem_limit: 512m
     read_only: true
@@ -104,8 +112,7 @@ services:
       - ntfy
 
   dashboard:
-    <<: *hardening
-    image: quantdesk:latest
+    <<: [*hardening, *quantdesk-image]
     command: ["uvicorn", "dashboard.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000",
               "--proxy-headers", "--forwarded-allow-ips", "*"]
     mem_limit: 256m
@@ -121,6 +128,8 @@ services:
     depends_on:
       - bot
 
+# Secret-Dateien müssen existieren, sonst startet nichts – prepare.sh legt fehlende leer an (mit Warnung).
+# tws_password.txt: Besitzer UID 1000 (IB Gateway), Modus 400. Die beiden Backup-Secrets: deine UID, Modus 400.
 secrets:
   tws_password:
     file: ./secrets/tws_password.txt

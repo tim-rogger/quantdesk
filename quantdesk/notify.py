@@ -23,6 +23,9 @@ class Notifier:
         self._session = session or requests
         self.timeout = timeout
         self.sent: list[dict] = []  # für Tests und das Lauf-Protokoll
+        self.failures = 0
+        self.last_error = ""
+        self._disabled = False  # nach 401/403 (Token fehlt/falsch) nichts mehr versuchen
 
     @classmethod
     def from_settings(cls, settings) -> "Notifier":
@@ -40,11 +43,23 @@ class Notifier:
         self.sent.append(payload)
         if not self.enabled:
             return False
+        if self._disabled:
+            self.failures += 1
+            return False
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         try:
             resp = self._session.post(self.url, json=payload, headers=headers, timeout=self.timeout)
             resp.raise_for_status()
             return True
         except requests.RequestException as e:
-            log.warning("Push an ntfy fehlgeschlagen: %s", e)
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status in (401, 403):
+                self._disabled = True
+                hint = "NTFY_TOKEN fehlt oder ist falsch" if not self.token else "NTFY_TOKEN ungültig"
+                log.warning("Push an ntfy abgelehnt (%s): %s – weitere Push-Versuche in diesem Lauf ausgelassen.",
+                            status, hint)
+            elif not self.failures:
+                log.warning("Push an ntfy fehlgeschlagen: %s", e)  # nur der erste Fehler pro Lauf
+            self.failures += 1
+            self.last_error = str(e)[:200]
             return False

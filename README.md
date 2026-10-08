@@ -289,8 +289,14 @@ Regeln, die überall gelten:
 - **IBKR-Warnungen werden nicht weggeklickt:** Lehnt IBKR eine Order ab, gilt sie als nicht platziert. Ist eine Order
   trotz Warnung aktiv, geht die Warnung als Push raus. Fehlt die Handelsberechtigung, wird das Symbol gesperrt (`not_tradable`).
 
-Einmalige Migration (bei gestopptem Bot) und Abschluss nach einem Firmenereignis:
+- **Nie nan/inf:** Mengen und Preise müssen endlich und plausibel sein, sonst werden sie nicht gebucht. Unplausible Werte
+  im Zustand werden beim Laden verworfen, das Symbol wird mit Grund gesperrt (`blocked`). Das löst `migrate`.
+  Symbole ohne Kontraktdefinition bei IBKR (z.B. nach einer Übernahme) werden ebenfalls gesperrt und nicht mehr angefragt.
+
+Migration (bei gestopptem Bot; zuerst als Trockenlauf mit Bericht, der nichts schreibt) und Abschluss nach einem
+Firmenereignis:
 ```bat
+python forward_test.py migrate --dry-run
 python forward_test.py migrate
 python forward_test.py close WBD --price 31.01666668 --date 2026-10-06 --note "Übernahme durch Paramount Skydance"
 ```

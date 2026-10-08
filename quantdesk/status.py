@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import tempfile
 import time
@@ -16,6 +17,19 @@ from quantdesk.forward import C_PARAMS
 from quantdesk.journal import Fill
 
 STOP_FILE = "STOP"
+
+
+def money(value, unit: str = " $") -> str:
+    """1234567.8 -> "1'234'568 $"; fehlend/ungültig -> "–" (nie "nan")."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        return "–"
+    return f"{value:,.0f}".replace(",", "'") + unit
+
+
+def pct(value) -> str:
+    if not isinstance(value, (int, float)) or not math.isfinite(value):
+        return "–"
+    return f"{value:+.1%}"
 
 
 def data_path(settings, name: str) -> str:
@@ -60,8 +74,12 @@ def virtual_account(fills: list[Fill], prices: dict[str, float], budget: float, 
     """C als eigenes Konto: Budget - Käufe + Verkäufe - Gebühren + eigene Positionen zum letzten Kurs."""
     qty: dict[str, float] = defaultdict(float)
     cost: dict[str, float] = defaultdict(float)
+    from quantdesk.journal import valid_fill
+
     cash = budget
     for f in sorted(fills, key=lambda x: x.ts):
+        if not valid_fill(f.qty, f.price):
+            continue  # unplausible Einträge zählen nie
         if f.side == "BUY":
             qty[f.symbol] += f.qty
             cost[f.symbol] += f.qty * f.price
@@ -77,6 +95,8 @@ def virtual_account(fills: list[Fill], prices: dict[str, float], budget: float, 
         if q <= 1e-9:
             continue
         price = prices.get(sym)
+        if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+            price = None
         avg = cost[sym] / q
         value = q * price if price else q * avg
         invested += value

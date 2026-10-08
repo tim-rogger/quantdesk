@@ -33,7 +33,7 @@ def save(path: str, systems: dict[str, EquitySystem]) -> None:
     fd, tmp = tempfile.mkstemp(prefix=".equities-", suffix=".tmp", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent=2, allow_nan=False)  # nie NaN/Infinity in die Datei
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
