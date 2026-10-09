@@ -135,3 +135,24 @@ def candidates_d(universe: tuple[str, ...] = CORE_KEYS) -> list:
 def benchmarks(universe: tuple[str, ...] = CORE_KEYS) -> list:
     return [Hold("SPY", "SPY halten (Massstab)"), FixedMix((("SPY", 0.6), ("IEF", 0.4)), "60/40 SPY/IEF"),
             RiskParity(universe), EqualWeight(universe)]
+
+
+# --------------------------------------------------------------------------- Kennzahl: Mischung SPY + Kandidat
+MIX_SPY_SHARES = (0.9, 0.8, 0.7, 0.5)  # Tims Festlegung 09.10.2026 – Kennzahl, KEIN Bestehens-Kriterium
+
+
+@dataclass(frozen=True)
+class SpyBlend:
+    """x % SPY + (1−x) % Kandidat, beide Zielgewichte zusammen monatlich zurückgesetzt (gleiche Kosten)."""
+    inner: object
+    spy_share: float
+
+    @property
+    def name(self) -> str:
+        spy = round(self.spy_share * 100)
+        return f"{spy} % SPY + {100 - spy} % {self.inner.name.split()[0]}"
+
+    def target_weights(self, view: View) -> dict[str, float]:
+        out = {s: (1 - self.spy_share) * w for s, w in self.inner.target_weights(view).items()}
+        out["SPY"] = out.get("SPY", 0.0) + self.spy_share
+        return out

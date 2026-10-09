@@ -202,17 +202,17 @@ def setup_registration(tmp_path, status="BESTÄTIGT von Tim am 10.10.2026", mode
     return str(root), str(reg)
 
 
-def test_run_all_variants_on_fake_universe(tmp_path, monkeypatch, capsys):
-    import research_etf
+def test_run_all_variants_on_fake_universe(tmp_path, monkeypatch):
     from quantdesk import phase2_run
+    from quantdesk.phase2_report import report
 
-    root, reg = setup_registration(tmp_path)
+    root, reg = setup_registration(tmp_path, mode="`effektiv`, als laufender Zähler")
     monkeypatch.setitem(phase2_run.MAIN_START, "A", "2001-01-02")
     monkeypatch.setitem(phase2_run.MAIN_START, "C", "2001-01-02")
     monkeypatch.setattr(phase2_run, "SIDE_START", "2001-01-02")
     universes = {v: fake_universe(v) for v in ("A", "B", "C")}
     evals, n, mode = phase2_run.run("D", universes, root, reg)
-    assert (n, mode) == (12, "effektiv")
+    assert (n, mode) == (3, "effektiv")  # laufender Zähler: nur ETF-Varianten D1–D3
     assert [e.label[0] for e in evals] == ["A", "B", "C", "N"]
     b = evals[1]
     assert b.start == universes["B"].full_start(warmup=253)
@@ -220,13 +220,16 @@ def test_run_all_variants_on_fake_universe(tmp_path, monkeypatch, capsys):
                               "SPY halten (Massstab)", "60/40 SPY/IEF", "G Risikoparität (1/Vola, 6 M)",
                               "Alle Klassen gleich gewichtet"}
     v = b.verdicts[("D1 Trend lang (12 M)", "CHF")]
-    assert v.deflated.n_trials == 12 and v.windows_total >= 5
+    assert v.deflated.n_trials == 3 and v.windows_total >= 5
+    assert len(evals[0].mixes) == len(b.mixes) == 3 * 4 and not evals[2].mixes  # Mischungen nur in A und B
     ok, why = phase2_run.final(evals, "D1 Trend lang (12 M)")
     assert isinstance(ok, bool) and why
-    for ev in evals:
-        research_etf.print_evaluation(ev)
-    out = capsys.readouterr().out
-    assert "Sicht 2" in out and "Korrelation" in out and "K5" in out
+    out = report("D", evals, n, mode, "Datenstand snapshot-test")
+    order = [out.index(h) for h in ("## Kurz", "## Kriterien – Soll und Ist", "## Mischungen SPY + D",
+                                    "## Kennzahlen je Fassung", "### Neben")]
+    assert order == sorted(order)  # Reihenfolge, wie Tim sie lesen will
+    assert "kein Kriterium" in out and "**N = 3**" in out and "80 % SPY + 20 % D1" in out
+    assert out.count("**D1 Trend lang (12 M): ") == 1 and "Soll" in out and "≥" in out
 
 
 def test_run_refuses_without_confirmation(tmp_path):
@@ -250,3 +253,48 @@ def test_cli_lauf_blocked_before_loading_data(tmp_path, capsys):
                               "--register", reg])
     assert code == 1 and "Gesperrt" in capsys.readouterr().err  # nicht "kein Datenstand": Sperre kommt zuerst
 
+
+
+def test_spy_blend_weights():
+    data, days = market_data(n=400)
+    view = View(data, 380)
+    w = es.SpyBlend(es.EqualWeight(UNI), 0.8).target_weights(view)
+    assert w["SPY"] == pytest.approx(0.8) and sum(w.values()) == pytest.approx(1.0)
+    assert w["AAA"] == pytest.approx(0.2 / 4)
+    assert es.SpyBlend(es.TrendLong(UNI), 0.7).name == "70 % SPY + 30 % D1"
+    assert es.MIX_SPY_SHARES == (0.9, 0.8, 0.7, 0.5)
+
+
+def test_etf_counter_runs_up_only(tmp_path):
+    from quantdesk import trials
+
+    _, reg = setup_registration(tmp_path)
+    rows = trials.read(reg)
+    assert trials.etf_counter(rows) == 3 and trials.counts(rows)[0] == 152
+    trials.append(trials.Trial(0, "2026-10-10", "1", "alt", "p", "Aktien", 1, "getestet", "x"), reg)
+    assert trials.etf_counter(trials.read(reg)) == 3  # Phase 1 zählt nicht
+    trials.append(trials.Trial(0, "2026-10-10", "2", "E1: Test", "p", "ETF", 1, "angemeldet", "–"), reg)
+    trials.set_result(len(trials.read(reg)), "getestet", "durchgefallen", reg)
+    assert trials.etf_counter(trials.read(reg)) == 4  # steigt dauerhaft
+
+
+def test_lauf_writes_report_and_registry_never_overwrites(tmp_path, monkeypatch, capsys):
+    import research_etf
+    from quantdesk import phase2_run, trials
+
+    root, reg = setup_registration(tmp_path, mode="effektiv")
+    monkeypatch.setitem(phase2_run.MAIN_START, "A", "2001-01-02")
+    monkeypatch.setitem(phase2_run.MAIN_START, "C", "2001-01-02")
+    monkeypatch.setattr(phase2_run, "SIDE_START", "2001-01-02")
+    fake = type("Snap", (), {"name": "snapshot-test", "header": lambda self: "Datenstand snapshot-test"})()
+    monkeypatch.setattr(research_etf.snap_mod, "open_snapshot", lambda name, root: fake)
+    monkeypatch.setattr(research_etf, "from_snapshot", lambda snap, v: fake_universe(v))
+    out_dir = tmp_path / "ergebnisse"
+    args = ["lauf", "D", "--anmeldungen", root, "--register", reg, "--ergebnisse", str(out_dir)]
+    assert research_etf.main(args) == 0 and research_etf.main(args) == 0
+    assert sorted(p.name for p in out_dir.iterdir()) == ["D-snapshot-test-2.md", "D-snapshot-test.md"]
+    rows = {t.name.split(":")[0]: t for t in trials.read(reg) if t.phase == "2"}
+    assert {k: r.status for k, r in rows.items()} == {"D1": "getestet", "D2": "getestet", "D3": "getestet"}
+    assert "N=3, snapshot-test" in rows["D1"].result
+    assert trials.etf_counter(trials.read(reg)) == 3  # derselbe Lauf erhöht N nicht
+    assert "## Kurz" in capsys.readouterr().out

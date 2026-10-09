@@ -1,7 +1,7 @@
 # Anmeldung Kandidat D – Trendfolge über mehrere Anlageklassen
 
-**Status:** ENTWURF – wartet auf Tims Bestätigung. Erst danach darf `python research_etf.py lauf D` rechnen.
-**Zählweise N:** (offen – Tim entscheidet: `streng` oder `effektiv`, siehe unten)
+**Status:** BESTÄTIGT von Tim am 09.10.2026 (im Chat, eingetragen von Claude/Cowork).
+**Zählweise N:** `effektiv`, als **laufender Zähler** – siehe Abschnitt „Zählweise N“ unten.
 
 Angemeldet am 09.10.2026, **bevor** irgendein Ergebnis von D auf echten Daten berechnet wurde. Code:
 `quantdesk/etf_strategies.py` (Regeln), `quantdesk/allocation.py` (Simulator), `quantdesk/phase2.py` (Kennzahlen,
@@ -97,6 +97,38 @@ Die 144 Grid-Varianten sind fast gleich und liefen auf einem anderen Universum. 
 zählen, ist sehr streng: D müsste dann über 20 Jahre eine Sharpe von fast 1 schaffen, mehr als Trendfolge in der
 Literatur meist erreicht. **Empfehlung: `effektiv`**. Dann ist meist K1 (SPY + 0.2) die härtere Hürde, K5 schützt
 aber gegen weitere Varianten.
+
+## Ergänzung bei der Bestätigung (09.10.2026, vor jedem Lauf auf echten Daten)
+
+Beides wurde festgelegt, **bevor** ein Ergebnis von D auf echten Daten berechnet wurde.
+
+**1. Zählweise N = `effektiv`, als laufender Zähler.**
+Begründung: Die Deflated Sharpe Ratio korrigiert die Auswahl über mehrere Versuche **auf denselben Daten**.
+Die 144 Grid-Varianten aus Phase 1 liefen auf einem anderen Universum (49 Aktien) und einem anderen Zeitraum
+(2019–2026) und sind untereinander fast identisch. Sie als unabhängige Versuche gegen den ETF-Datenstand zu
+zählen, wäre nicht streng, sondern sachlich falsch.
+**Bedingung:** N ist ein laufender Zähler über alle Varianten, die je auf einem ETF-Datenstand gerechnet wurden.
+Start: N = 3 (D1, D2, D3). Jede weitere Variante – bei E, F oder einem zweiten Anlauf von D – erhöht N dauerhaft
+und damit die Hürde für K5. Der Zähler sinkt nie. Der jeweils gültige Wert steht im Register und in jedem Bericht.
+
+**2. Zusätzliche Kennzahl: Mischungen aus SPY und D (kein Bestehens-Kriterium).**
+Die Kriterien K1–K5 fragen „ist D besser als SPY?". Für ein reales Depot ist die nützlichere Frage:
+„wird ein SPY-Depot besser, wenn D dazukommt?". Eine Strategie mit geringerer Sharpe als SPY kann ein
+SPY-Depot verbessern, wenn sie wenig mit Aktien gemeinsam läuft.
+
+Auszuweisen, je Variante und je Fassung (A, B), in USD **und** CHF, mit denselben Kosten:
+
+| Mischung | Kennzahlen |
+|---|---|
+| 100 % SPY (Referenz) | Rendite p.a., Sharpe, max DD |
+| 90 % SPY + 10 % D | dieselben, plus Differenz zur Referenz |
+| 80 / 20 | " |
+| 70 / 30 | " |
+| 50 / 50 | " |
+
+Monatlich auf die Zielgewichte zurückgesetzt, Kosten wie bei D. Zusätzlich: Korrelation der Monatsrenditen von
+D zu SPY über den ganzen Zeitraum. **Das ist eine Kennzahl zum Anschauen, kein Kriterium.** Das Urteil über D
+fällt allein nach K1–K5. Eine gute Mischung ist kein Bestehen und darf im Fazit nicht als solches dargestellt werden.
 
 ## Erwartetes Verhalten (vorher aufgeschrieben)
 

@@ -53,10 +53,19 @@ def read(path: str = REGISTRY) -> list[Trial]:
     return out
 
 
+ETF_PHASE = "2"  # Varianten auf einem ETF-Datenstand (Forschungsphase 2 und später)
+
+
 def counts(trials: list[Trial]) -> tuple[int, int]:
-    """(N streng, N effektiv)."""
+    """(N streng über alles, Anzahl Strategievarianten über alles) – zur Information."""
     counted = [t for t in trials if t.status in COUNTED]
     return sum(t.new_trials for t in counted), len(counted)
+
+
+def etf_counter(trials: list[Trial]) -> int:
+    """N effektiv (Tims Festlegung 09.10.2026): laufender Zähler aller Varianten, die je auf einem
+    ETF-Datenstand angemeldet bzw. gerechnet wurden. Zeilen werden nie gelöscht -> der Zähler sinkt nie."""
+    return sum(1 for t in trials if t.phase == ETF_PHASE and t.status != "nicht getestet")
 
 
 def append(trial: Trial, path: str = REGISTRY) -> Trial:

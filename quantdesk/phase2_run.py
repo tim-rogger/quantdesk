@@ -21,7 +21,7 @@ CURRENCIES = ("USD", "CHF")
 CAPITAL = 100_000.0
 COSTS = Costs(commission=1.0, slippage_bps=5.0)
 CANDIDATES = {"D": es.candidates_d}
-N_MODE = re.compile(r"^\*\*Zählweise N:\*\*\s*(streng|effektiv)\b", re.M)
+N_MODE = re.compile(r"^\*\*Zählweise N:\*\*\s*`?(streng|effektiv)\b", re.M)
 
 
 def n_mode(name: str, root: str = trials.REGISTRATIONS) -> str:
@@ -33,8 +33,9 @@ def n_mode(name: str, root: str = trials.REGISTRATIONS) -> str:
 
 
 def n_trials(mode: str, registry: str = trials.REGISTRY) -> int:
-    strict, effective = trials.counts(trials.read(registry))
-    return strict if mode == "streng" else effective
+    """streng: jede je geprüfte Kombination (alle Phasen); effektiv: laufender Zähler der ETF-Varianten."""
+    rows = trials.read(registry)
+    return trials.counts(rows)[0] if mode == "streng" else trials.etf_counter(rows)
 
 
 @dataclass
@@ -48,6 +49,8 @@ class Evaluation:
     benchmarks: list[str]
     verdicts: dict[tuple[str, str], Verdict] = field(default_factory=dict)
     normalized: dict[str, Normalized] = field(default_factory=dict)
+    mixes: dict[tuple[str, float], SimResult] = field(default_factory=dict)  # (Kandidat, SPY-Anteil) – nur Kennzahl
+    market: Market | None = None
 
     @property
     def spy(self) -> SimResult:
@@ -62,7 +65,7 @@ class Evaluation:
 
 
 def evaluate(universe: EtfUniverse, label: str, start: str, n: int, candidate_fn=es.candidates_d,
-             keys: tuple[str, ...] = CORE_KEYS) -> Evaluation:
+             keys: tuple[str, ...] = CORE_KEYS, with_mixes: bool = False) -> Evaluation:
     bars = {k: universe.series[k].bars for k in keys if k in universe.series}
     data = Aligned(bars, universe.rates)
     end = min(s.bars[-1].day for k, s in universe.series.items() if k in keys)
@@ -70,6 +73,11 @@ def evaluate(universe: EtfUniverse, label: str, start: str, n: int, candidate_fn
     results = {s.name: simulate(s, data, start, end, CAPITAL, COSTS) for s in cands + benches}
     ev = Evaluation(label, universe, start, end, results, [s.name for s in cands], [s.name for s in benches])
     market = Market(universe.rates, universe.fx, universe.chf_rates)
+    ev.market = market
+    if with_mixes:  # Kennzahl Mischung SPY + Kandidat (Anmeldung D, Ergänzung 09.10.2026) – kein Kriterium
+        for cand in cands:
+            for share in es.MIX_SPY_SHARES:
+                ev.mixes[(cand.name, share)] = simulate(es.SpyBlend(cand, share), data, start, end, CAPITAL, COSTS)
     for name in ev.candidates:
         for cur in CURRENCIES:
             ev.verdicts[(name, cur)] = verdict(results[name], ev.spy, market, n, cur)
@@ -90,8 +98,8 @@ def run(name: str, universes: dict[str, EtfUniverse], reg_root: str = trials.REG
     if b_start is None:
         raise ValueError("Fassung B: nicht alle Anlageklassen vorhanden.")
     evals = [
-        evaluate(universes["A"], f"A – verkettet, ab {MAIN_START['A'][:4]}", MAIN_START["A"], n, fn),
-        evaluate(universes["B"], f"B – nur echte ETFs, ab {b_start[:7]}", b_start, n, fn),
+        evaluate(universes["A"], f"A – verkettet, ab {MAIN_START['A'][:4]}", MAIN_START["A"], n, fn, with_mixes=True),
+        evaluate(universes["B"], f"B – nur echte ETFs, ab {b_start[:7]}", b_start, n, fn, with_mixes=True),
         evaluate(universes["C"], f"C – Ersatz korrigiert, ab {MAIN_START['C'][:4]}", MAIN_START["C"], n, fn),
         evaluate(universes["A"], f"Neben – A ab {SIDE_START[:4]}, wachsendes Universum (entscheidet nicht)",
                  SIDE_START, n, fn),

@@ -8,8 +8,10 @@ Tabelle gezählt (`quantdesk/trials.py`).
 - **Versuche neu** = Anzahl neu geprüfter Varianten in dieser Zeile. Eine Parametersuche über 144 Kombinationen
   zählt 144. Varianten, die schon in einer früheren Suche enthalten waren, zählen 0.
 - **N streng** = Summe der Spalte „Versuche neu“ (jede je geprüfte Kombination).
-- **N effektiv** = Anzahl Zeilen mit Status `getestet`, `angemeldet` oder `läuft` (jede Strategievariante einmal,
-  eine Parametersuche als eine).
+- **N effektiv** (gilt seit 09.10.2026, Tims Festlegung in `research/anmeldungen/D.md`) = **laufender Zähler** aller
+  Varianten, die je auf einem ETF-Datenstand angemeldet oder gerechnet wurden (Phase 2, Status ≠ `nicht getestet`).
+  Start N = 3 (D1–D3). Jede weitere Variante erhöht N dauerhaft, der Zähler sinkt nie. Die Phase-1-Versuche liefen
+  auf einem anderen Universum und Zeitraum und zählen hier nicht. Das ist die Zählweise für K5.
 - Jeder neue Lauf hängt eine Zeile an bzw. trägt sein Ergebnis ein. Zeilen werden nie gelöscht.
 - Kandidaten werden **vor** dem Lauf angemeldet (`research/anmeldungen/`). Vergleichsportfolios (SPY, 60/40,
   gleich gewichtet, Risikoparität) sind keine Versuche und stehen nicht hier.
