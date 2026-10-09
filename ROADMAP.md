@@ -58,6 +58,32 @@ Handelskosten inklusive, Auswertung in USD **und** CHF. Massstab: Kaufen & Halte
 | 29.09.2026 | Erste Fassung: K1 „Sharpe höher als SPY“, K2, K3 | vor dem ersten Walk-forward-Lauf |
 | 29.09.2026 | **Vor dem Test von Kandidat A verschärft:** K1 +0.2, neu K4, Cash-Zinsen, Sharpe mit Zins, CHF, VT und 60/40 | Mit der ersten Fassung hätte schon 0.81 gegen 0.80 bestanden, und Strategien mit viel Cash sahen ohne Zinsvergleich zu gut aus. Das Ergebnis von A war zu diesem Zeitpunkt nicht bekannt. |
 
+## Bestehen-Regel für Backtests in Forschungsphase 2 (ETF-Universum) – Entwurf 09.10.2026, gilt nach Tims Bestätigung
+
+Festgelegt, **bevor** ein Ergebnis von Phase 2 bekannt ist. Die Phase-1-Regel oben bleibt unverändert und gilt für Phase 1.
+Datenstand, Fassungen und Zeiträume: `research/DATEN.md`. Anmeldung je Kandidat: `research/anmeldungen/`.
+
+**Sicht 1 – risikobereinigt** (Massstab SPY halten; alle fünf in USD **und** CHF; in Fassung A und B, bei Abweichung gilt B):
+
+| # | Kriterium |
+|---|---|
+| K1 | Sharpe ≥ SPY + 0.2 |
+| K2 | max Drawdown nicht schlimmer als SPY |
+| K3 | in ≥ 2/3 der Testjahre (Blöcke von 252 Handelstagen) höhere Sharpe als SPY |
+| K4 | mehr Rendite p.a. als SPY + T-Bill mit demselben Ø Investitionsgrad |
+| K5 | **neu – Mehrfachtest:** Deflated Sharpe Ratio (Bailey/López de Prado) ≥ 0.95, N = Versuche laut `research/registry.md` |
+
+**Sicht 2 – risiko-normiert** (Kennzahl, kein Hebel im Test oder Bot): auf SPY-Schwankung skaliert, Finanzierung T-Bill
++ 1.5 %. R1 Rendite p.a. > SPY, R2 max DD nicht schlimmer. Ausgewiesen werden Hebel, max DD, schlimmster Monat und
+Finanzierungskosten. Beide Sichten laufen parallel, keine ersetzt die andere.
+
+Ein Kandidat kommt nur in den Vorwärtstest, wenn er Sicht 1 besteht, und nur mit einer vorher festgelegten Regel
+für den Vorwärtstest (wie bei C).
+
+| Datum | Änderung | Begründung |
+|---|---|---|
+| 09.10.2026 | Entwurf: K1–K4 wie Phase 1, neu K5 (DSR ≥ 0.95), Sicht 2, Fassungen A/B/C, echter CHF-Zins | Mehrfachtests (Phase 1: 9 Varianten bzw. 149 Kombinationen), wachsendes und verkettetes Universum, Renditeziel (Nachtrag 09.10.). Kein Ergebnis von Phase 2 bekannt. Zählweise von N entscheidet Tim (Anmeldung D). |
+
 ## Bestehen-Regel für den Vorwärtstest von C (Phase 3) – festgelegt am 29.09.2026, VOR dem Start
 
 **Was getestet wird:** Kandidat C genau wie im Backtest: Grid 5 Levels × 2 %, Einstieg und Nachkäufe nur, wenn der
@@ -141,10 +167,13 @@ Läuft neben dem Vorwärtstest. Ändert weder den Bot noch C noch eine Bestehen-
 - [x] Teil 1 – Datenbasis: ETF-Universum ohne Survivorship-Bias, 9 Anlageklassen + Cash, verlängert mit dokumentierten
       Ersatzreihen (6 Klassen ab 1996, alle 9 ab 2004), USD/CHF und CHF-Zins von FRED (`research/DATEN.md`,
       `python research_etf.py daten`). Die Aktien-Studie aus Phase 1 ist in allen Berichten als „mit Survivorship-Bias“ markiert.
-- [ ] Teil 2 – Register aller getesteten Strategien (`research/registry.md`), Mehrfachtest-Korrektur, Anmeldung
-      jedes Kandidaten vor dem Lauf
+- [x] Daten eingefroren: `research/data/snapshot-2026-10-09/` (Rohdaten + MANIFEST mit Prüfsummen), Vergleich von
+      Datenständen; Fassungen A (verkettet), B (nur echte ETFs, ab 2007), C (Ersatz korrigiert)
+- [x] Teil 2 – Register aller getesteten Strategien (`research/registry.md`), Deflated Sharpe Ratio
+      (`quantdesk/multitest.py`), Bestehen-Regel Phase 2 (Entwurf oben), Anmeldungen mit Sperre für Läufe
+- [ ] **Tim:** Anmeldung D bestätigen und Zählweise N wählen (`research/anmeldungen/D.md`)
 - [ ] Mehr-Strategien-Architektur (C als erste Instanz, getrennte Buchführung, Budgets, Dashboard, Korrelation)
-- [ ] Kandidat D – Trendfolge über mehrere Anlageklassen (beide Sichten: risikobereinigt und risiko-normiert)
+- [ ] Kandidat D – Trendfolge über mehrere Anlageklassen: Code und Tests (künstliche Daten) fertig, Lauf wartet auf die Bestätigung
 - [ ] Kandidaten E (Gegenbewegung auf Index-ETFs) und F (defensive Aktien-ETFs); G = Risikoparität als Massstab
 
 ### Phase 4 – Entscheidung über echtes Geld (Tims Entscheidung)
