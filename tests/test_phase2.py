@@ -224,7 +224,8 @@ def test_run_all_variants_on_fake_universe(tmp_path, monkeypatch):
     assert len(evals[0].mixes) == len(b.mixes) == 3 * 4 and not evals[2].mixes  # Mischungen nur in A und B
     ok, why = phase2_run.final(evals, "D1 Trend lang (12 M)")
     assert isinstance(ok, bool) and why
-    out = report("D", evals, n, mode, "Datenstand snapshot-test")
+    out = report("D", evals, n, mode, "Datenstand snapshot-test (abgerufen 2026-10-09, 28 Reihen)")
+    assert "(abgerufen 2026-10-09, 28 Reihen)" in out and "Kapital 100'000 $" in out  # Kopfzeile unverändert
     order = [out.index(h) for h in ("## Kurz", "## Kriterien – Soll und Ist", "## Mischungen SPY + D",
                                     "## Kennzahlen je Fassung", "### Neben")]
     assert order == sorted(order)  # Reihenfolge, wie Tim sie lesen will

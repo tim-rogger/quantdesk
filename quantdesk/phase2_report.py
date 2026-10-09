@@ -62,7 +62,7 @@ def report(name: str, evals: list[Evaluation], n: int, mode: str, snapshot_heade
            f"{snapshot_header}. Mehrfachtest: **N = {n}** (Zählweise {mode}, laufender Zähler, `research/registry.md`) "
            f"→ für K5 nötige Sharpe ≈ {required_sharpe(n, years_a):.2f} (A) bzw. {required_sharpe(n, years_b):.2f} (B). "
            f"Kosten {COSTS.commission:.0f} $/Order + {COSTS.slippage_bps:.0f} Bp. Schlupf, Kapital "
-           f"{CAPITAL:,.0f} $, kein Hebel.".replace(",", "'"), "",
+           f"{f'{CAPITAL:,.0f}'.replace(',', chr(39))} $, kein Hebel.", "",
            "## Kurz", ""]
     out += [f"- {verdict_sentence(evals, c)}" for c in a.candidates]
     out += ["", "Entscheidend ist Sicht 1 (K1–K5) in Fassung **B** (nur echte ETF-Daten), wenn A und B abweichen. "
