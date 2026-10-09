@@ -16,7 +16,7 @@ import requests
 
 from quantdesk.backtest import Costs
 from quantdesk.history import load_history
-from quantdesk.research import WARMUP, Row, best_grid_on, calendar, load_universe, periods, study
+from quantdesk.research import BIAS_LABEL, WARMUP, Row, best_grid_on, calendar, load_universe, periods, study
 from quantdesk.walkforward import (
     CURRENCIES,
     ETF_SYMBOLS,
@@ -35,7 +35,7 @@ DISCLAIMER = "Backtests zeigen die Vergangenheit, nicht die Zukunft. Keine Anlag
 
 
 def print_rows(title: str, rows: list[Row]) -> None:
-    print(f"\n{title}")
+    print(f"\n{title} – {BIAS_LABEL}")
     header = (f"{'Strategie':58}{'Rendite p.a.':>13}{'Sharpe':>8}{'max DD':>9}{'Ø investiert':>14}"
               f"{'p.a. / Ø inv.':>18}{'Trades':>8}")
     print(header)
@@ -55,6 +55,7 @@ def print_walk_forward(wins, benches, results, market: Market) -> None:
     spy = benches[0]
     print(f"\nWALK-FORWARD: 3 Jahre Training → 1 Jahr Test, {len(wins)} Testfenster "
           f"({wins[0].test.start} – {wins[-1].test.end})")
+    print(f"ACHTUNG: {BIAS_LABEL}.")
     print("Cash verzinst mit dem 3-Monats-T-Bill-Zins, Sharpe = Überrendite über diesem Zins, Handelskosten inklusive.")
 
     print("\nSharpe je Testjahr (USD)")

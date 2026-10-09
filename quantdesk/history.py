@@ -1,6 +1,7 @@
 """Historische Tageskurse (Yahoo-Chart, split-/dividendenbereinigt) mit lokalem Cache für den Backtester."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import time
@@ -26,6 +27,11 @@ class Bar:
     close: float
 
 
+def utc_day(ts: float) -> str:
+    """Unix-Sekunden -> 'YYYY-MM-DD' (UTC), auch vor 1970 (time.gmtime scheitert dort unter Windows)."""
+    return (dt.datetime(1970, 1, 1) + dt.timedelta(seconds=ts)).strftime("%Y-%m-%d")
+
+
 def parse_yahoo_history(data: dict) -> list[Bar]:
     """OHLC mit adjclose/close skalieren, damit Splits und Dividenden keine Sprünge machen."""
     try:
@@ -40,7 +46,7 @@ def parse_yahoo_history(data: dict) -> list[Bar]:
         if None in (o, h, l, c, a) or c <= 0:
             continue
         f = a / c
-        bars.append(Bar(time.strftime("%Y-%m-%d", time.gmtime(t)), o * f, h * f, l * f, a))
+        bars.append(Bar(utc_day(t), o * f, h * f, l * f, a))
     return bars
 
 

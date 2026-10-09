@@ -16,6 +16,8 @@ from quantdesk.history import Bar
 from quantdesk.metrics import Perf, perf
 
 WARMUP = 252  # Handelstage Vorlauf vor dem ersten Handelstag
+# Jeder Bericht dieser Aktien-Studie trägt diese Kennzeichnung (Forschungsphase 2, Teil 1.4)
+BIAS_LABEL = "Aktien-Universum MIT Survivorship-Bias (nur heute noch existierende Firmen) – Ergebnisse nach oben verzerrt"
 
 
 @dataclass(frozen=True)

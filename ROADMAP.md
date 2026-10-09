@@ -22,7 +22,7 @@ Stand: 29.09.2026. Keine Anlageberatung.
 - **Kandidat C wird nicht weiter im Backtest angepasst.** Wir haben diese Daten schon zu oft angeschaut, jede weitere
   Änderung wäre Überanpassung. Der einzige faire Test für C ist die Zukunft: der **Vorwärtstest** unten.
 
-### Ergebnis Walk-forward (7 Testjahre Okt 2019 – Sep 2026, Cash verzinst, Kosten inkl., USD)
+### Ergebnis Walk-forward (7 Testjahre Okt 2019 – Sep 2026, Cash verzinst, Kosten inkl., USD) – Aktien-Universum MIT Survivorship-Bias
 
 | Strategie | Rendite p.a. | Sharpe | max DD | Ø inv. | Mix gl. Inv. | Jahre besser | K1 | K2 | K3 | K4 |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -136,6 +136,17 @@ verletzt: Es wurde nichts doppelt gehandelt, nur unvollständig gebucht. Der Vor
 - [ ] Monatlich `forward_test.py report` (bzw. im Dashboard: F1–F5)
 - [ ] Nach 126 Handelstagen: Urteil nach F1–F5 (Vorfälle oben beim Urteil erwähnen)
 
+### Forschungsphase 2 – neue Kandidaten auf dem ETF-Universum ⏳ seit 09.10.2026 (läuft neben dem Vorwärtstest)
+Läuft neben dem Vorwärtstest. Ändert weder den Bot noch C noch eine Bestehen-Regel. **Kein Hebel, kein echtes Geld.**
+- [x] Teil 1 – Datenbasis: ETF-Universum ohne Survivorship-Bias, 9 Anlageklassen + Cash, verlängert mit dokumentierten
+      Ersatzreihen (6 Klassen ab 1996, alle 9 ab 2004), USD/CHF und CHF-Zins von FRED (`research/DATEN.md`,
+      `python research_etf.py daten`). Die Aktien-Studie aus Phase 1 ist in allen Berichten als „mit Survivorship-Bias“ markiert.
+- [ ] Teil 2 – Register aller getesteten Strategien (`research/registry.md`), Mehrfachtest-Korrektur, Anmeldung
+      jedes Kandidaten vor dem Lauf
+- [ ] Mehr-Strategien-Architektur (C als erste Instanz, getrennte Buchführung, Budgets, Dashboard, Korrelation)
+- [ ] Kandidat D – Trendfolge über mehrere Anlageklassen (beide Sichten: risikobereinigt und risiko-normiert)
+- [ ] Kandidaten E (Gegenbewegung auf Index-ETFs) und F (defensive Aktien-ETFs); G = Risikoparität als Massstab
+
 ### Phase 4 – Entscheidung über echtes Geld (Tims Entscheidung)
 - Nur, wenn C den Vorwärtstest besteht, und auch dann ist das nur ein schwaches Signal.
 - Der Bot hat bewusst **keinen** Echtgeld-Modus. Das wäre ein eigener, bewusster Umbau mit zusätzlichen
@@ -146,7 +157,8 @@ verletzt: Es wurde nichts doppelt gehandelt, nur unvollständig gebucht. Der Vor
 ## Bekannte Grenzen
 
 - Survivorship-Bias: Einzelaktien-Universum enthält nur heute existierende Firmen (ETFs kaum betroffen).
-- Nicht eingerechnet: Schlupf im Backtest, Steuern, Wechselkosten CHF → USD; CHF-Zins als 0 angenommen.
+- Nicht eingerechnet: Schlupf im Backtest, Steuern, Wechselkosten CHF → USD; CHF-Zins als 0 angenommen (Phase 1;
+  Phase 2 rechnet mit dem echten CHF-Zins von FRED).
 - Cash-Zinsen als Näherung: nachträglich auf die Kapitalkurve gerechnet, nicht in die Handelsentscheidungen.
 - Journal-Tag = Tag, an dem der Bot den Fill bemerkt (UTC). Läuft der Bot über Nacht nicht, kann ein Fill einen Tag später gebucht werden.
 - 10 Jahre Daten = wenige Marktphasen; ein Crash wie 2008 ist nicht enthalten.
