@@ -1,6 +1,6 @@
 # QuantDesk – Roadmap
 
-Stand: 29.09.2026. Keine Anlageberatung.
+Stand: 09.10.2026. Keine Anlageberatung.
 
 ## Fazit der Forschungsphase (abgeschlossen am 29.09.2026)
 
@@ -40,6 +40,37 @@ Stand: 29.09.2026. Keine Anlageberatung.
 
 \* aufgebläht durch Survivorship-Bias.
 
+## Forschungsphase 2 – Fazit Kandidat D (09.10.2026)
+
+**Kandidat D (Trendfolge über 9 Anlageklassen) fällt in allen drei Varianten durch.** Das gilt in Fassung A und B,
+in USD und CHF. A und B urteilen gleich. Bericht: `research/ergebnisse/D-snapshot-2026-10-09.md`, Datenstand
+`snapshot-2026-10-09`, Code `2ae7f1e`, N = 3.
+
+- **Nur K2 erfüllt:** Der grösste Rückgang beträgt −10 bis −21 %, bei SPY −55 %.
+- **Kein risikobereinigter Vorteil:** In B (2007–2026, USD) liegt die Sharpe bei 0.52–0.55, also genau auf dem Niveau
+  von SPY (0.55). K1 verlangt 0.75.
+  - D war nur in 4–8 von 20 Jahren besser, nötig wären 14.
+  - Die Rendite (4.7–7.8 % p.a.) liegt unter SPY + T-Bill mit gleichem Investitionsgrad (K4).
+  - Die DSR verfehlt die 0.95 knapp (0.93–0.94). In A (USD) wäre sie erfüllt.
+- **In CHF klar schwächer** (Sharpe 0.29–0.43 in B): Ein grosser Teil liegt in USD-Anleihen und Cash, und der Dollar
+  schwankt für einen Franken-Anleger mit.
+- **Das einfache 60/40 SPY/IEF hat eine höhere Sharpe** (0.63 in USD) als jede Variante von D. Gegenüber reiner
+  Diversifikation bringt der Trendfilter etwas (gleich gewichtet 0.44, Risikoparität 0.49), aber nicht genug.
+- **Sicht 2:** Rechnerisch auf die SPY-Schwankung skaliert (Hebel 1.5–3.2, Finanzierung 1.5–6.8 % p.a.) bringt in B
+  keine Variante mehr Rendite als SPY (bestes Ergebnis D3 mit 9.5 % gegen 11.0 %). Nur in A lag D3 knapp vorn
+  (11.1 % gegen 10.9 %). B gilt.
+- **Mischungen** (Kennzahl, **kein** Bestehen): 50 % SPY + 50 % D3 senkt in B den grössten Rückgang von −55 % auf −33 %
+  und kostet 1.2 % p.a. Die Sharpe steigt in USD um +0.09, in CHF um +0.03. Mit D1 oder D2 verbessert sich die
+  Sharpe in CHF nicht. Die Korrelation von D zu SPY liegt bei 0.45–0.57.
+- **Die Verkettung ist nicht der Grund:** Fassung C (Ersatzreihen korrigiert) weicht von A um 0.1 % des Endwerts ab.
+  Die Nebenauswertung ab 1996 entscheidet nicht. Sie zeigt eine bessere Sharpe (0.66–0.70 gegen 0.49), aber auch dort
+  ist D nur in 13–16 von 31 Jahren besser.
+- **Erwartung erfüllt:** Vorher stand in der Anmeldung: „D fällt nach Sicht 1 eher durch“, kleine Rückgänge, Rendite
+  unter SPY. Genau so ist es gekommen.
+
+**Folgen:** D wird nicht angepasst (Anmeldung) und geht nicht in den Vorwärtstest. Der Zähler N steht bei 3 und
+steigt mit jeder weiteren Variante. Nächste Kandidaten: E und F, jeweils mit eigener Anmeldung.
+
 ## Bestehen-Regel für Backtests (Phase 1)
 
 Walk-forward (`python research.py --walk-forward`): 3 Jahre Training, 1 Jahr Test, um 1 Jahr verschoben; Testjahre
@@ -58,7 +89,7 @@ Handelskosten inklusive, Auswertung in USD **und** CHF. Massstab: Kaufen & Halte
 | 29.09.2026 | Erste Fassung: K1 „Sharpe höher als SPY“, K2, K3 | vor dem ersten Walk-forward-Lauf |
 | 29.09.2026 | **Vor dem Test von Kandidat A verschärft:** K1 +0.2, neu K4, Cash-Zinsen, Sharpe mit Zins, CHF, VT und 60/40 | Mit der ersten Fassung hätte schon 0.81 gegen 0.80 bestanden, und Strategien mit viel Cash sahen ohne Zinsvergleich zu gut aus. Das Ergebnis von A war zu diesem Zeitpunkt nicht bekannt. |
 
-## Bestehen-Regel für Backtests in Forschungsphase 2 (ETF-Universum) – Entwurf 09.10.2026, gilt nach Tims Bestätigung
+## Bestehen-Regel für Backtests in Forschungsphase 2 (ETF-Universum) – festgelegt 09.10.2026, von Tim mit der Anmeldung D bestätigt
 
 Festgelegt, **bevor** ein Ergebnis von Phase 2 bekannt ist. Die Phase-1-Regel oben bleibt unverändert und gilt für Phase 1.
 Datenstand, Fassungen und Zeiträume: `research/DATEN.md`. Anmeldung je Kandidat: `research/anmeldungen/`.
@@ -83,6 +114,7 @@ für den Vorwärtstest (wie bei C).
 | Datum | Änderung | Begründung |
 |---|---|---|
 | 09.10.2026 | Entwurf: K1–K4 wie Phase 1, neu K5 (DSR ≥ 0.95), Sicht 2, Fassungen A/B/C, echter CHF-Zins | Mehrfachtests (Phase 1: 9 Varianten bzw. 149 Kombinationen), wachsendes und verkettetes Universum, Renditeziel (Nachtrag 09.10.). Kein Ergebnis von Phase 2 bekannt. Zählweise von N entscheidet Tim (Anmeldung D). |
+| 09.10.2026 | **Bestätigt von Tim** (vor dem ersten Lauf): N = `effektiv` als laufender Zähler über alle Varianten auf ETF-Datenständen (Start 3, sinkt nie); zusätzliche Kennzahl Mischungen SPY + Kandidat (90/10 … 50/50), **kein** Kriterium | Die Phase-1-Versuche liefen auf anderem Universum und Zeitraum. Für ein Depot ist „verbessert der Kandidat ein SPY-Depot?“ die nützlichere Frage. Kein Ergebnis von D war bekannt. |
 
 ## Bestehen-Regel für den Vorwärtstest von C (Phase 3) – festgelegt am 29.09.2026, VOR dem Start
 
@@ -171,9 +203,13 @@ Läuft neben dem Vorwärtstest. Ändert weder den Bot noch C noch eine Bestehen-
       Datenständen; Fassungen A (verkettet), B (nur echte ETFs, ab 2007), C (Ersatz korrigiert)
 - [x] Teil 2 – Register aller getesteten Strategien (`research/registry.md`), Deflated Sharpe Ratio
       (`quantdesk/multitest.py`), Bestehen-Regel Phase 2 (Entwurf oben), Anmeldungen mit Sperre für Läufe
-- [ ] **Tim:** Anmeldung D bestätigen und Zählweise N wählen (`research/anmeldungen/D.md`)
+- [x] Tim hat die Anmeldung D bestätigt (N effektiv als laufender Zähler, Mischungen als Kennzahl)
 - [ ] Mehr-Strategien-Architektur (C als erste Instanz, getrennte Buchführung, Budgets, Dashboard, Korrelation)
-- [ ] Kandidat D – Trendfolge über mehrere Anlageklassen: Code und Tests (künstliche Daten) fertig, Lauf wartet auf die Bestätigung
+      **Zweck:** Der Vorwärtstest ist **kein Wettbewerb** zwischen Strategien. Wer über sechs Monate vorne liegt,
+      entscheidet fast nur der Zufall. Welche Strategie besser ist, entscheidet der Backtest über 20 Jahre. Der
+      Vorwärtstest prüft nur, ob die Umsetzung stimmt (F4, F5). Eine zweite Instanz läuft erst, wenn ihr Kandidat
+      die Backtest-Regel bestanden hat und eine eigene Vorwärtstest-Anmeldung vorliegt.
+- [x] Kandidat D – Trendfolge über mehrere Anlageklassen: **durchgefallen** (alle drei Varianten, Fazit oben)
 - [ ] Kandidaten E (Gegenbewegung auf Index-ETFs) und F (defensive Aktien-ETFs); G = Risikoparität als Massstab
 
 ### Phase 4 – Entscheidung über echtes Geld (Tims Entscheidung)
