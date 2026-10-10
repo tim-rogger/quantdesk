@@ -42,6 +42,17 @@ pro_order = 3                 # CHF je Order
 limit_abstand_prozent = 0.5   # Regel 20: Limit so viel über (Kauf) bzw. unter (Verkauf) dem letzten Kurs
 bruchstueck_stellen   = 4     # Nachkommastellen bei Stück (IBKR erlaubt Bruchstücke für SIX-ETFs; 0 = nur ganze)
 
+[kurse]
+# Woher Lotse die Kurse nimmt. "yahoo" (Standard): letzter Schlusskurs von Yahoo, kein IBKR-Marktdaten-Abo nötig.
+# "ibkr": über das IB Gateway – für die SIX braucht das ein Marktdaten-Abo. Orders laufen in beiden Fällen über IBKR.
+# Kein automatischer Wechsel zwischen den Quellen.
+quelle = "yahoo"
+
+[kurse.symbole]
+# Börsenkürzel bei IBKR -> Kurs-Symbol bei Yahoo (SIX = Endung .SW). Jedes Papier aus [wertpapiere] und [abbau].
+SSAC   = "SSAC.SW"
+CSBGC7 = "CSBGC7.SW"
+
 [verbindung]
 # IB Gateway (Paper). Bot C benutzt Client-ID 17 – Lotse eine eigene.
 host      = "ib-gateway"

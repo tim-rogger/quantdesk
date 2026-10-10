@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from lotse import logik
 from lotse.konto import Konto, KontoFehler
+from lotse.kurse import YahooKurse
 from lotse.push import Push
 from lotse.tagebuch import AUSGEFUEHRT, GESENDET, STORNIERT, VERWORFEN, VORSCHLAG, Tagebuch
 
@@ -33,6 +34,7 @@ log = logging.getLogger("lotse")
 CONFIG = os.path.join(os.path.dirname(__file__), "config.toml")
 MODI = ("VORSCHLAG", "PAPER", "ECHT")
 OFFEN = "TODO"
+KURSQUELLEN = ("yahoo", "ibkr")
 BOERSE_KALENDER = "XSWX"  # SIX Swiss Exchange
 
 
@@ -56,7 +58,7 @@ def pruefe_config(cfg: dict) -> list[str]:
     if cfg.get("modus") not in MODI:
         probleme.append(f"modus muss einer von {MODI} sein, ist {cfg.get('modus')!r}")
     fehlend = [teil for teil in ("wertpapiere", "ziel", "grenzen", "abbau", "gebuehren", "ausfuehren",
-                                 "verbindung", "push", "ablage") if teil not in cfg]
+                                 "verbindung", "push", "ablage", "kurse") if teil not in cfg]
     if fehlend:
         return probleme + [f"Abschnitt [{teil}] fehlt" for teil in fehlend]
     if list(cfg["wertpapiere"]) != list(cfg["ziel"]):
@@ -70,6 +72,15 @@ def pruefe_config(cfg: dict) -> list[str]:
         probleme.append("In [ziel], [grenzen], [gebuehren] und [ausfuehren] stehen nur Zahlen")
     if not all(isinstance(p, str) for p in cfg["abbau"].get("liste", [])):
         probleme.append("[abbau] liste enthält nur Börsenkürzel als Text")
+    quelle = cfg["kurse"].get("quelle")
+    if quelle not in KURSQUELLEN:
+        probleme.append(f"[kurse] quelle muss einer von {KURSQUELLEN} sein, ist {quelle!r}")
+    elif quelle == "yahoo":
+        symbole = cfg["kurse"].get("symbole", {})
+        papiere = [p for p in cfg["wertpapiere"].values() if p != OFFEN] + list(cfg["abbau"].get("liste", []))
+        fehlend = [p for p in papiere if not symbole.get(p)]
+        if fehlend:
+            probleme.append(f"[kurse.symbole] fehlt für: {', '.join(fehlend)}")
     return probleme
 
 
@@ -146,9 +157,29 @@ def erfasse_dividenden(cfg: dict, konto: Konto, tagebuch: Tagebuch, jetzt: dt.da
     return hinweise
 
 
+# --------------------------------------------------------------------------- Kurse (Regel 2)
+def hole_kurse(cfg: dict, konto: Konto, papiere: list[str], kursquelle) -> tuple[dict, dict[str, str], list[str]]:
+    """Kurse je Papier aus der Quelle laut config.toml. Liefert (Kurse, Quelle je Papier, Probleme).
+    Ein Kurs in einer anderen Währung als das Konto ist ein Problem (Regel 0) – es wird nie umgerechnet."""
+    if cfg["kurse"]["quelle"] == "ibkr":
+        return konto.kurse(papiere), dict(konto.kursquellen), []
+    waehrung = cfg["verbindung"]["waehrung"]
+    kurse, quellen, probleme = {}, {}, []
+    for papier in papiere:
+        symbol = cfg["kurse"]["symbole"][papier]
+        n = kursquelle.notierung(symbol)
+        if n.wert is not None and n.waehrung != waehrung:
+            probleme.append(f"Kurs von {papier} ({symbol}) ist in {n.waehrung or 'unbekannter Währung'} statt "
+                            f"{waehrung} – wird nicht umgerechnet")
+        kurse[papier] = logik.Kurs(n.wert, n.datum)
+        if n.wert is not None:
+            quellen[papier] = f"Yahoo {symbol}"
+    return kurse, quellen, probleme
+
+
 # --------------------------------------------------------------------------- der Lauf
 def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Push, jetzt: dt.datetime,
-          handelstag=letzter_handelstag, einzahlung_bestaetigt: bool = False) -> Ergebnis:
+          handelstag=letzter_handelstag, einzahlung_bestaetigt: bool = False, kursquelle=None) -> Ergebnis:
     probleme = pruefe_config(cfg)
     if probleme:
         return _stopp(push, "Zieldatei unvollständig: " + "; ".join(probleme))
@@ -175,8 +206,9 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
         papiere = list(e.ziel) + [p for p in e.abbau if p not in e.ziel]
         heute_betrag, heute_orders = tagebuch.heute(jetzt.date())
         kasse = tagebuch.kasse_letzter_lauf()
+        kurse, quellen, kursprobleme = hole_kurse(cfg, konto, papiere, kursquelle or YahooKurse())
         lage = logik.Lage(cash=konto.cash(), stueck=konto.positionen(), eigene_stueck=tagebuch.eigene_stueck(),
-                          kurse=konto.kurse(papiere), letzter_handelstag=handelstag(jetzt.date()),
+                          kurse=kurse, letzter_handelstag=handelstag(jetzt.date()),
                           mindestdepot_erreicht=tagebuch.mindestdepot_erreicht(), heute_betrag=heute_betrag,
                           heute_orders=heute_orders, investiert=tagebuch.investiert(),
                           cash_letzter_lauf=kasse[0] if kasse else None,
@@ -186,9 +218,10 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
         return _ende(tagebuch, nummer, jetzt, _stopp(push, f"Broker: {fehler}"))
     if offene:
         hinweise.append(f"{len(offene)} offene Lotse-Order(s) beim Broker (im VORSCHLAG nicht storniert)")
-    quellen = getattr(konto, "kursquellen", {})
+    if kursprobleme:  # Regel 0: falsche Währung
+        return _ende(tagebuch, nummer, jetzt, _stopp(push, "; ".join(kursprobleme)))
     if quellen:
-        hinweise.append("Kurse: " + ", ".join(f"{p} {q} ({lage.kurse[p].datum:%d.%m.})" for p, q in quellen.items()))
+        hinweise.append("Kurse: " + ", ".join(f"{p} {q} ({_tag(lage.kurse[p].datum)})" for p, q in quellen.items()))
 
     try:
         plan = logik.plane(lage, e)  # Regel 0, 5–18 (Tim)
@@ -235,6 +268,10 @@ def _gesamt(lage: logik.Lage, e: logik.Einstellungen) -> float | None:
     except (NotImplementedError, TypeError):
         return None
     return gesamt if math.isfinite(gesamt) else None
+
+
+def _tag(datum: dt.date | None) -> str:
+    return f"{datum:%d.%m.}" if datum else "ohne Datum"
 
 
 def _stopp(push: Push, grund: str) -> Ergebnis:

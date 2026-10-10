@@ -140,7 +140,7 @@ def paper_lauf(tmp_path, monkeypatch, ib, plan):
     monkeypatch.setattr(logik, "plane", lambda lage, e: plan)
     monkeypatch.setattr(logik, "regel_20_stueck_und_limit", lambda order, kurs, abstand, stellen: (0.5, 156.0))
     cfg, text = lauf.lies_config()
-    cfg = {**cfg, "modus": "PAPER", "wertpapiere": {"aktien": "VWRL", "anleihen": "CHCORP"}}
+    cfg = {**cfg, "kurse": {"quelle": "ibkr"}, "modus": "PAPER", "wertpapiere": {"aktien": "VWRL", "anleihen": "CHCORP"}}
     ib.preise = {"VWRL": (155.3, 155.0, dt.datetime(2026, 10, 9, 10, 0)),
                  "CHCORP": (99.0, 99.0, dt.datetime(2026, 10, 9, 10, 0))}
     konto = Konto("h", 1, 27, "DUO844164", "EBS", "CHF", ib=ib)

@@ -157,7 +157,7 @@ def test_letzter_handelstag_der_six_mit_feiertagen():
 # ---------------------------------------------------------------- Lauf
 def lauf_mit(tmp_path, modus="VORSCHLAG", ib=None, wertpapiere=None):
     cfg, text = lauf.lies_config()
-    cfg = {**cfg, "modus": modus, "wertpapiere": wertpapiere or {"aktien": "VWRL", "anleihen": "CHCORP"}}
+    cfg = {**cfg, "kurse": {"quelle": "ibkr"}, "modus": modus, "wertpapiere": wertpapiere or {"aktien": "VWRL", "anleihen": "CHCORP"}}
     ib = ib or FakeIB()
     ib.preise = ib.preise or {"VWRL": (155.3, 155.0, JETZT), "CHCORP": (99.0, 99.0, JETZT)}
     push = Push()
@@ -247,7 +247,7 @@ def test_lauf_vermerkt_mindestdepot_einmal(tmp_path, monkeypatch):
 
     monkeypatch.setattr(logik, "plane", plane)
     cfg, text = lauf.lies_config()
-    cfg = {**cfg, "wertpapiere": {"aktien": "VWRL", "anleihen": "CHCORP"},
+    cfg = {**cfg, "kurse": {"quelle": "ibkr"}, "wertpapiere": {"aktien": "VWRL", "anleihen": "CHCORP"},
            "grenzen": {**cfg["grenzen"], "mindestdepot": 300}}  # Lotse-Geld 300 = genau erreicht
     ib = FakeIB()
     ib.preise = {"VWRL": (155.3, 155.0, JETZT), "CHCORP": (99.0, 99.0, JETZT)}
@@ -316,7 +316,7 @@ def test_weder_historie_noch_verzoegert_kurs_fehlt():
 
 def lauf_mit_historie(tmp_path, historie, modus="VORSCHLAG"):
     cfg, text = lauf.lies_config()
-    cfg = {**cfg, "modus": modus, "wertpapiere": {"aktien": "SSAC", "anleihen": "CSBGC7"}}
+    cfg = {**cfg, "kurse": {"quelle": "ibkr"}, "modus": modus, "wertpapiere": {"aktien": "SSAC", "anleihen": "CSBGC7"}}
     ib = FakeIB()
     ib.historie = historie
     push = Push()
@@ -385,7 +385,7 @@ def paper_lauf_mit_flex(tmp_path, monkeypatch, query_id="123", token="tok"):
     else:
         monkeypatch.delenv("LOTSE_FLEX_TOKEN", raising=False)
     cfg, text = lauf.lies_config()
-    cfg = {**cfg, "modus": "PAPER", "dividenden": {"flex_query_id": query_id}}
+    cfg = {**cfg, "kurse": {"quelle": "ibkr"}, "modus": "PAPER", "dividenden": {"flex_query_id": query_id}}
     ib = FakeIB()
     ib.pos = {"CSBGC7": 2.0}
     ib.historie = {"SSAC": [(dt.date(2026, 10, 8), 102.5)], "CSBGC7": [(dt.date(2026, 10, 8), 98.7)]}
@@ -422,7 +422,7 @@ def test_lauf_ohne_flex_meldet_dass_ausschuettungen_fehlen(tmp_path, monkeypatch
 # ---------------------------------------------------------------- Ohne Budget: Einzahlung bestätigen
 def lauf_ohne_budget(tmp_path, cash, bestaetigt=False):
     cfg, text = lauf.lies_config()
-    cfg = {**cfg, "modus": "PAPER", "grenzen": {**cfg["grenzen"], "budget_chf": 0}}
+    cfg = {**cfg, "kurse": {"quelle": "ibkr"}, "modus": "PAPER", "grenzen": {**cfg["grenzen"], "budget_chf": 0}}
     ib = FakeIB()
     ib.cash = cash
     ib.historie = {"SSAC": [(dt.date(2026, 10, 8), 102.5)], "CSBGC7": [(dt.date(2026, 10, 8), 98.7)]}
@@ -445,3 +445,115 @@ def test_ohne_budget_normale_einzahlung_wird_angelegt(tmp_path):
     Tagebuch(str(tmp_path)).vermerke_kasse(1, 1000.0, 0.0, JETZT)
     ergebnis, push, ib = lauf_ohne_budget(tmp_path, 1800.0)  # 800 eingezahlt
     assert ergebnis.ok and len(ib.gesendet) == 1
+
+
+# ---------------------------------------------------------------- Kursquelle Yahoo (eingesetzt, kein Netz)
+from lotse.kurse import KEINE, Notierung, YahooKurse, lies_yahoo  # noqa: E402
+
+
+def yahoo_antwort(schluesse, waehrung="CHF", start=1791331200):  # 2026-10-07 00:00 UTC
+    return {"chart": {"result": [{"meta": {"currency": waehrung, "gmtoffset": 7200},
+                                  "timestamp": [start + i * 86400 + 7 * 3600 for i in range(len(schluesse))],
+                                  "indicators": {"quote": [{"close": schluesse}],
+                                                 "adjclose": [{"adjclose": [s and s * 0.9 for s in schluesse]}]}}]}}
+
+
+def test_yahoo_juengster_balken_mit_kurs_datum_und_waehrung():
+    n = lies_yahoo(yahoo_antwort([103.26, 102.76, None]))  # heute noch leer
+    assert n == Notierung(102.76, dt.date(2026, 10, 8), "CHF")  # echter Schluss, nicht adjclose
+    assert lies_yahoo({"chart": {"result": []}}) == KEINE
+    assert lies_yahoo(yahoo_antwort([None, None])) == Notierung(None, None, "CHF")
+
+
+def test_yahoo_kursquelle_mit_eingesetzter_verbindung():
+    aufrufe = []
+
+    class Sitzung:
+        def get(self, url, headers, timeout):
+            aufrufe.append(url)
+            return NS(raise_for_status=lambda: None, json=lambda: yahoo_antwort([72.95, 72.97]))
+
+    assert YahooKurse(Sitzung()).notierung("CSBGC7.SW") == Notierung(72.97, dt.date(2026, 10, 8), "CHF")
+    assert "CSBGC7.SW" in aufrufe[0] and "interval=1d" in aufrufe[0]
+
+
+def test_yahoo_fehler_gibt_leere_notierung():
+    import requests
+
+    class Kaputt:
+        def get(self, url, headers, timeout):
+            raise requests.ConnectionError("kein Netz")
+
+    assert YahooKurse(Kaputt()).notierung("SSAC.SW") == KEINE
+
+
+class FakeKursquelle:
+    def __init__(self, notierungen):
+        self.notierungen = notierungen
+        self.gefragt = []
+
+    def notierung(self, symbol):
+        self.gefragt.append(symbol)
+        return self.notierungen.get(symbol, KEINE)
+
+
+def lauf_yahoo(tmp_path, notierungen, modus="PAPER"):
+    cfg, text = lauf.lies_config()  # quelle = "yahoo", SSAC -> SSAC.SW, CSBGC7 -> CSBGC7.SW
+    cfg = {**cfg, "modus": modus}
+    ib = FakeIB()
+    quelle = FakeKursquelle(notierungen)
+    push = Push()
+    ergebnis = lauf.laufe(cfg, text, konto(ib), Tagebuch(str(tmp_path)), push, JETZT,
+                          handelstag=lambda d: GESTERN, kursquelle=quelle)
+    return ergebnis, push, ib, quelle
+
+
+FRISCH = {"SSAC.SW": Notierung(102.76, GESTERN, "CHF"), "CSBGC7.SW": Notierung(72.97, GESTERN, "CHF")}
+
+
+def test_lauf_mit_yahoo_kursen_order_ueber_ibkr_ohne_ibkr_kurse(tmp_path):
+    ergebnis, push, ib, quelle = lauf_yahoo(tmp_path, FRISCH)
+    assert ergebnis.ok and quelle.gefragt == ["SSAC.SW", "CSBGC7.SW"]
+    assert ib.historie_aufrufe == [] and ib.ticker_aufrufe == []  # IBKR wird nicht nach Kursen gefragt
+    (symbol, order), = ib.gesendet  # die Order geht trotzdem über IBKR
+    assert symbol == "SSAC" and order.tif == "DAY" and order.lmtPrice > 102.76
+    assert "Kurse: SSAC Yahoo SSAC.SW (08.10.), CSBGC7 Yahoo CSBGC7.SW (08.10.)" in push.gesendet[-1]["message"]
+
+
+@pytest.mark.parametrize("waehrung", ["USD", None])
+def test_kurs_in_anderer_waehrung_regel_0_statt_umrechnen(tmp_path, waehrung):
+    notierungen = {**FRISCH, "SSAC.SW": Notierung(118.0, GESTERN, waehrung)}
+    ergebnis, push, ib, _ = lauf_yahoo(tmp_path, notierungen)
+    assert not ergebnis.ok and "SSAC" in ergebnis.text and "nicht umgerechnet" in ergebnis.text
+    assert ib.gesendet == [] and push.gesendet[-1]["title"] == "Lotse – keine Order"
+
+
+def test_yahoo_kurs_von_vorgestern_regel_0_zu_alt(tmp_path):
+    notierungen = {**FRISCH, "CSBGC7.SW": Notierung(72.9, dt.date(2026, 10, 6), "CHF")}
+    ergebnis, push, ib, _ = lauf_yahoo(tmp_path, notierungen)
+    assert not ergebnis.ok and "CSBGC7" in ergebnis.text and "zu alt" in ergebnis.text
+
+
+def test_yahoo_ohne_kurs_regel_0_fehlt_kein_wechsel_zu_ibkr(tmp_path):
+    ergebnis, push, ib, _ = lauf_yahoo(tmp_path, {"SSAC.SW": FRISCH["SSAC.SW"]})
+    assert not ergebnis.ok and "Kurs von CSBGC7 fehlt" in ergebnis.text
+    assert ib.historie_aufrufe == [] and ib.ticker_aufrufe == []  # kein automatisches Zurückfallen
+
+
+def test_quelle_ibkr_fragt_das_gateway(tmp_path):
+    cfg, text = lauf.lies_config()
+    cfg = {**cfg, "modus": "PAPER", "kurse": {"quelle": "ibkr"}}
+    ib = FakeIB()
+    ib.historie = {"SSAC": [(GESTERN, 102.5)], "CSBGC7": [(GESTERN, 98.7)]}
+    quelle = FakeKursquelle(FRISCH)
+    lauf.laufe(cfg, text, konto(ib), Tagebuch(str(tmp_path)), Push(), JETZT, handelstag=lambda d: GESTERN,
+               kursquelle=quelle)
+    assert quelle.gefragt == [] and [a[0] for a in ib.historie_aufrufe] == ["SSAC", "CSBGC7"]
+
+
+def test_config_kurse_wird_geprueft():
+    cfg, _ = lauf.lies_config()
+    assert lauf.pruefe_config({**cfg, "kurse": {"quelle": "bloomberg"}})[0].startswith("[kurse] quelle")
+    ohne = {**cfg, "kurse": {"quelle": "yahoo", "symbole": {"SSAC": "SSAC.SW"}}}
+    assert lauf.pruefe_config(ohne) == ["[kurse.symbole] fehlt für: CSBGC7"]
+    assert lauf.pruefe_config({**cfg, "kurse": {"quelle": "ibkr"}}) == []
