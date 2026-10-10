@@ -15,6 +15,9 @@ from lotse.logik import KAUF, VERKAUF, Kurs
 from lotse.tagebuch import REF_PREFIX
 
 PAPER_PREFIX = "DU"
+HISTORISCH = "historisch"  # letzter Tages-Schlusskurs aus reqHistoricalData – braucht kein Marktdaten-Abo
+VERZOEGERT = "verzögert"  # Fallback: Live-Abfrage mit verzögerten Daten (reqMarketDataType 3)
+HISTORIE_ZEITRAUM = "1 W"  # Tagesbalken der letzten Woche: der letzte ist der jüngste Schlusskurs (auch nach Feiertagen)
 PLATZHALTER_AB = 1e300  # ab hier ist eine Zahl ein ib_async-Platzhalter
 GUELTIGKEIT = "DAY"  # Regel 20: nur bis Handelsschluss, nie GTC
 
@@ -55,6 +58,17 @@ class Ausfuehrung:
     menge: float | None
     preis: float | None
     gebuehr: float | None = None  # Kommission laut IBKR; None = (noch) nicht gemeldet
+
+
+def _als_datum(wert) -> dt.date | None:
+    """Datum aus einem Balken oder Ticker: date, datetime oder Text 'JJJJMMTT'."""
+    if isinstance(wert, dt.datetime):
+        return wert.date()
+    if isinstance(wert, dt.date):
+        return wert
+    if isinstance(wert, str) and len(wert) >= 8 and wert[:8].isdigit():
+        return dt.date(int(wert[:4]), int(wert[4:6]), int(wert[6:8]))
+    return None
 
 
 def _kurs_oder_none(wert) -> float | None:
@@ -100,6 +114,7 @@ class Konto:
             ib = IB()
         self.ib = ib
         self._vertraege: dict[str, object] = {}
+        self.kursquellen: dict[str, str] = {}  # Papier -> woher der Kurs dieses Laufs stammt (für den Push)
 
     # ------------------------------------------------------------------ Verbindung
     def verbinden(self) -> None:
@@ -147,20 +162,58 @@ class Konto:
         return out
 
     def kurse(self, papiere: list[str]) -> dict[str, Kurs]:
-        """Letzter Kurs je Papier mit Datum. Fehlt etwas, steht None drin – Regel 0 entscheidet."""
+        """Letzter Kurs je Papier mit dem Tag, von dem er stammt. Lotse läuft monatlich und braucht keinen
+        Live-Kurs: zuerst der letzte Tages-Schlusskurs (historisch, kein Abo nötig), sonst verzögerte Daten.
+        Fehlt beides, steht None drin – Regel 0 stoppt. Das Datum bleibt dabei, damit Regel 0 prüfen kann,
+        ob der Kurs älter als ein Handelstag ist."""
         out = {}
+        self.kursquellen = {}
         for papier in papiere:
             try:
-                ticker = self.ib.reqTickers(self._vertrag(papier))[0]
-            except (KontoFehler, IndexError):
+                vertrag = self._vertrag(papier)
+            except KontoFehler:
                 out[papier] = Kurs(None, None)
                 continue
-            wert = _kurs_oder_none(ticker.last)
-            if wert is None:
-                wert = _kurs_oder_none(ticker.close)
-            zeit = getattr(ticker, "time", None)
-            out[papier] = Kurs(wert, zeit.date() if isinstance(zeit, dt.datetime) else None)
+            kurs = self._kurs_historisch(vertrag)
+            quelle = HISTORISCH
+            if kurs is None:
+                kurs = self._kurs_verzoegert(vertrag)
+                quelle = VERZOEGERT
+            if kurs is None:
+                out[papier] = Kurs(None, None)
+                continue
+            out[papier] = kurs
+            self.kursquellen[papier] = quelle
         return out
+
+    def _kurs_historisch(self, vertrag) -> Kurs | None:
+        """Jüngster Tagesbalken (Schlusskurs und sein Datum). None, wenn IBKR keinen liefert."""
+        try:
+            balken = self.ib.reqHistoricalData(vertrag, endDateTime="", durationStr=HISTORIE_ZEITRAUM,
+                                               barSizeSetting="1 day", whatToShow="TRADES", useRTH=True,
+                                               formatDate=1)
+        except (OSError, TimeoutError, ValueError, ConnectionError):
+            return None
+        for b in reversed(list(balken or [])):
+            wert = _kurs_oder_none(getattr(b, "close", None))
+            datum = _als_datum(getattr(b, "date", None))
+            if wert is not None and datum is not None:
+                return Kurs(wert, datum)
+        return None
+
+    def _kurs_verzoegert(self, vertrag) -> Kurs | None:
+        """Fallback: Live-Abfrage mit verzögerten Daten. None, wenn auch hier nichts kommt."""
+        self.ib.reqMarketDataType(3)
+        try:
+            ticker = self.ib.reqTickers(vertrag)[0]
+        except IndexError:
+            return None
+        wert = _kurs_oder_none(ticker.last)
+        if wert is None:
+            wert = _kurs_oder_none(ticker.close)
+        if wert is None:
+            return None
+        return Kurs(wert, _als_datum(getattr(ticker, "time", None)))
 
     def offene_orders(self) -> list[OffeneOrder]:
         """Offene Orders von Lotse (Referenz beginnt mit 'lotse-'). Fremde Orders werden nie angefasst."""

@@ -11,7 +11,12 @@ class FakeIB:
         self.verbunden = False
         self.cash = 10_000.0
         self.pos = {}  # Symbol -> Stück
-        self.preise = {}  # Symbol -> (last, close, zeit)
+        self.preise = {}  # Symbol -> (last, close, zeit) für die verzögerte Live-Abfrage
+        self.historie = {}  # Symbol -> [(datum, schluss), ...] für reqHistoricalData (kein Abo nötig)
+        self.historie_fehler = False
+        self.historie_aufrufe = []
+        self.ticker_aufrufe = []
+        self.md_typen = []
         self.offen = []  # Trades
         self.fills = []
         self.gesendet = []
@@ -33,7 +38,7 @@ class FakeIB:
         return self.konten
 
     def reqMarketDataType(self, typ):
-        pass
+        self.md_typen.append(typ)
 
     def sleep(self, s=0):
         pass
@@ -52,7 +57,15 @@ class FakeIB:
     def positions(self, konto=""):
         return [NS(contract=NS(symbol=s), position=q) for s, q in self.pos.items()]
 
+    def reqHistoricalData(self, vertrag, endDateTime, durationStr, barSizeSetting, whatToShow, useRTH,
+                          formatDate=1):
+        self.historie_aufrufe.append((vertrag.symbol, durationStr, barSizeSetting, whatToShow, useRTH))
+        if self.historie_fehler:
+            raise TimeoutError("historische Daten: Zeitüberschreitung (Test)")
+        return [NS(date=d, close=c) for d, c in self.historie.get(vertrag.symbol, [])]  # IBKR 354/162: leer
+
     def reqTickers(self, vertrag):
+        self.ticker_aufrufe.append(vertrag.symbol)
         last, close, zeit = self.preise.get(vertrag.symbol, (float("nan"), float("nan"), None))
         return [NS(last=last, close=close, time=zeit)]
 
