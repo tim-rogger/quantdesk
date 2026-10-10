@@ -7,6 +7,7 @@ damit die übrigen Tests weiter zählen. Ist die Regel geschrieben, läuft der T
 import os
 
 import pytest
+import requests
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -17,3 +18,16 @@ def pytest_runtest_makereport(item, call):
             and call.excinfo.errisinstance(NotImplementedError)):
         bericht.outcome = "skipped"
         bericht.longrepr = (str(item.path), item.location[1] or 0, f"wartet auf Tim: {call.excinfo.value}")
+
+
+@pytest.fixture(autouse=True)
+def kein_netz_fuer_kurse(monkeypatch):
+    """Kein Test darf Kurse im Netz abfragen: quantdesk.marketdata bekommt ohne eigene Session eine gesperrte.
+    (Tests mit eigener Session – z.B. test_data_sources – sind davon nicht betroffen.)"""
+    import quantdesk.marketdata
+
+    class GesperrteSession:
+        def get(self, *args, **kwargs):
+            raise requests.ConnectionError("Netzzugriff im Test gesperrt – Kursquelle einsetzen")
+
+    monkeypatch.setattr(quantdesk.marketdata.requests, "Session", GesperrteSession)

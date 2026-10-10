@@ -123,3 +123,33 @@ def test_core_modules_do_not_import_tkinter():
     import quantdesk.app  # noqa: F401
 
     assert "tkinter" not in sys.modules
+
+
+# ---------------------------------------------------------------- Erweiterung für Lotse (SIX): Mapping, Datum, Währung
+import datetime as dt  # noqa: E402
+
+YAHOO_SIX = {"chart": {"result": [{"meta": {"symbol": "SSAC.SW", "regularMarketPrice": 102.94, "currency": "CHF",
+                                            "regularMarketTime": 1791560185, "gmtoffset": 7200}}]}}
+
+
+def test_bot_c_unveraendert_ohne_mapping():
+    session = Session(stooq=Resp(STOOQ_CSV))
+    q = MarketData(None, session=session).get_quote("AAPL")
+    assert (q.symbol, q.price, q.source) == ("AAPL", 214.10, "Stooq")
+    assert session.urls == ["https://stooq.com/q/d/l/?s=aapl.us&i=d"]
+    assert q.datum == dt.date(2026, 9, 26) and q.waehrung is None  # Stooq nennt keine Währung
+    assert stooq_symbol("SSAC") == "ssac.us" and yahoo_symbol("SSAC.SW") == "SSAC-SW"  # Standard bleibt
+
+
+def test_mapping_je_quelle_fuer_die_six():
+    session = Session(stooq=Resp(STOOQ_CSV), yahoo=Resp(YAHOO_SIX))
+    md = MarketData(None, session=session, symbole={"SSAC": {"yahoo": "SSAC.SW", "stooq": ""}})
+    q = md.get_quote("ssac")
+    assert session.urls == ["https://query1.finance.yahoo.com/v8/finance/chart/SSAC.SW?range=5d&interval=1d"]
+    assert (q.price, q.source, q.waehrung, q.datum) == (102.94, "Yahoo", "CHF", dt.date(2026, 10, 9))
+
+
+def test_mapping_stooq_symbol_fuer_ein_anderes_land():
+    session = Session(stooq=Resp(STOOQ_CSV))
+    MarketData(None, session=session, symbole={"SSAC": {"stooq": "ssac.ch"}}).get_quote("SSAC")
+    assert session.urls == ["https://stooq.com/q/d/l/?s=ssac.ch&i=d"]

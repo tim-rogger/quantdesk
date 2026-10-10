@@ -56,7 +56,7 @@ def pruefe_config(cfg: dict) -> list[str]:
     if cfg.get("modus") not in MODI:
         probleme.append(f"modus muss einer von {MODI} sein, ist {cfg.get('modus')!r}")
     fehlend = [teil for teil in ("wertpapiere", "ziel", "grenzen", "abbau", "gebuehren", "ausfuehren",
-                                 "verbindung", "push", "ablage") if teil not in cfg]
+                                 "verbindung", "push", "ablage", "kurse") if teil not in cfg]
     if fehlend:
         return probleme + [f"Abschnitt [{teil}] fehlt" for teil in fehlend]
     if list(cfg["wertpapiere"]) != list(cfg["ziel"]):
@@ -70,6 +70,11 @@ def pruefe_config(cfg: dict) -> list[str]:
         probleme.append("In [ziel], [grenzen], [gebuehren] und [ausfuehren] stehen nur Zahlen")
     if not all(isinstance(p, str) for p in cfg["abbau"].get("liste", [])):
         probleme.append("[abbau] liste enthält nur Börsenkürzel als Text")
+    symbole = cfg["kurse"].get("symbole", {})
+    papiere = [p for p in cfg["wertpapiere"].values() if p != OFFEN] + list(cfg["abbau"].get("liste", []))
+    fehlend = [p for p in papiere if not isinstance(symbole.get(p), dict) or not any(symbole[p].values())]
+    if fehlend:
+        probleme.append(f"[kurse.symbole] fehlt für: {', '.join(fehlend)} (z.B. SSAC = {{ yahoo = \"SSAC.SW\" }})")
     return probleme
 
 
@@ -146,6 +151,21 @@ def erfasse_dividenden(cfg: dict, konto: Konto, tagebuch: Tagebuch, jetzt: dt.da
     return hinweise
 
 
+# --------------------------------------------------------------------------- Kurse (Regel 2)
+def hole_kurse(cfg: dict, konto: Konto, papiere: list[str]) -> tuple[dict, dict, list[str]]:
+    """Kurse je Papier über das Konto (quantdesk.marketdata). Liefert (Kurse für logik, Meldungen, Probleme).
+    Ein Kurs in einer anderen oder unbekannten Währung als das Konto ist ein Problem (Regel 0) – nie umrechnen."""
+    waehrung = cfg["verbindung"]["waehrung"]
+    meldungen = konto.kurse(papiere)
+    kurse, probleme = {}, []
+    for papier, m in meldungen.items():
+        if m.wert is not None and m.waehrung != waehrung:
+            probleme.append(f"Kurs von {papier} ({m.quelle}) ist in {m.waehrung or 'unbekannter Währung'} statt "
+                            f"{waehrung} – wird nicht umgerechnet")
+        kurse[papier] = logik.Kurs(m.wert, m.datum)
+    return kurse, meldungen, probleme
+
+
 # --------------------------------------------------------------------------- der Lauf
 def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Push, jetzt: dt.datetime,
           handelstag=letzter_handelstag, einzahlung_bestaetigt: bool = False) -> Ergebnis:
@@ -175,8 +195,10 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
         papiere = list(e.ziel) + [p for p in e.abbau if p not in e.ziel]
         heute_betrag, heute_orders = tagebuch.heute(jetzt.date())
         kasse = tagebuch.kasse_letzter_lauf()
+        kurse, meldungen, kursprobleme = hole_kurse(cfg, konto, papiere)
+        tagebuch.vermerke_kurse(nummer, meldungen, jetzt)  # Regel 2: Kurs, Datum, Währung, Quelle
         lage = logik.Lage(cash=konto.cash(), stueck=konto.positionen(), eigene_stueck=tagebuch.eigene_stueck(),
-                          kurse=konto.kurse(papiere), letzter_handelstag=handelstag(jetzt.date()),
+                          kurse=kurse, letzter_handelstag=handelstag(jetzt.date()),
                           mindestdepot_erreicht=tagebuch.mindestdepot_erreicht(), heute_betrag=heute_betrag,
                           heute_orders=heute_orders, investiert=tagebuch.investiert(),
                           cash_letzter_lauf=kasse[0] if kasse else None,
@@ -186,9 +208,10 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
         return _ende(tagebuch, nummer, jetzt, _stopp(push, f"Broker: {fehler}"))
     if offene:
         hinweise.append(f"{len(offene)} offene Lotse-Order(s) beim Broker (im VORSCHLAG nicht storniert)")
-    quellen = getattr(konto, "kursquellen", {})
-    if quellen:
-        hinweise.append("Kurse: " + ", ".join(f"{p} {q} ({lage.kurse[p].datum:%d.%m.})" for p, q in quellen.items()))
+    if kursprobleme:  # Regel 0: falsche Währung
+        return _ende(tagebuch, nummer, jetzt, _stopp(push, "; ".join(kursprobleme)))
+    hinweise.append("Kurse: " + ", ".join(f"{p} {m.wert:.2f} {m.waehrung} von {m.quelle} ({_tag(m.datum)})"
+                                          for p, m in meldungen.items() if m.wert is not None))
 
     try:
         plan = logik.plane(lage, e)  # Regel 0, 5–18 (Tim)
@@ -237,6 +260,10 @@ def _gesamt(lage: logik.Lage, e: logik.Einstellungen) -> float | None:
     return gesamt if math.isfinite(gesamt) else None
 
 
+def _tag(datum: dt.date | None) -> str:
+    return f"{datum:%d.%m.}" if datum else "ohne Datum"
+
+
 def _stopp(push: Push, grund: str) -> Ergebnis:
     """Regel 0 im Gerüst: keine Order, Push mit Grund, Lauf beenden."""
     log.warning("Lotse stoppt: %s", grund)
@@ -261,8 +288,12 @@ def main(argv: list[str] | None = None) -> int:
     cfg, text = lies_config(args.config)
     v = cfg.get("verbindung", {})
     push = Push.aus_umgebung(cfg.get("push", {}).get("thema", "lotse"))
+    from quantdesk.marketdata import MarketData
+
+    marktdaten = MarketData(broker=None, symbole=cfg.get("kurse", {}).get("symbole", {}))
     try:
-        konto = Konto(v["host"], int(v["port"]), int(v["client_id"]), v["konto"], v["boerse"], v["waehrung"])
+        konto = Konto(v["host"], int(v["port"]), int(v["client_id"]), v["konto"], v["boerse"], v["waehrung"],
+                      marktdaten=marktdaten)
     except (KeyError, KontoFehler) as fehler:
         print(f"Verbindung: {fehler}", file=sys.stderr)
         return 1

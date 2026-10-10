@@ -19,7 +19,7 @@ from lotse.tagebuch import (
     Tagebuch,
     gueltige_menge,
 )
-from tests.lotse_fakes import UNSET_DOUBLE, FakeIB
+from tests.lotse_fakes import KURSE_TEST, UNSET_DOUBLE, FakeIB, Preisbuch
 
 JETZT = dt.datetime(2026, 10, 9, 10, 30)
 
@@ -140,10 +140,10 @@ def paper_lauf(tmp_path, monkeypatch, ib, plan):
     monkeypatch.setattr(logik, "plane", lambda lage, e: plan)
     monkeypatch.setattr(logik, "regel_20_stueck_und_limit", lambda order, kurs, abstand, stellen: (0.5, 156.0))
     cfg, text = lauf.lies_config()
-    cfg = {**cfg, "modus": "PAPER", "wertpapiere": {"aktien": "VWRL", "anleihen": "CHCORP"}}
+    cfg = {**cfg, "kurse": KURSE_TEST, "modus": "PAPER", "wertpapiere": {"aktien": "VWRL", "anleihen": "CHCORP"}}
     ib.preise = {"VWRL": (155.3, 155.0, dt.datetime(2026, 10, 9, 10, 0)),
                  "CHCORP": (99.0, 99.0, dt.datetime(2026, 10, 9, 10, 0))}
-    konto = Konto("h", 1, 27, "DUO844164", "EBS", "CHF", ib=ib)
+    konto = Konto("h", 1, 27, "DUO844164", "EBS", "CHF", ib=ib, marktdaten=Preisbuch(ib))
     return lauf.laufe(cfg, text, konto, Tagebuch(str(tmp_path)), Push(), JETZT,
                       handelstag=lambda d: dt.date(2026, 10, 8))
 

@@ -1,5 +1,6 @@
 """Lotse – Gerüst: Config, Konto (IBKR gemockt), Push, Lauf, Börsenkalender, Grenzen von logik.py."""
 import ast
+import json
 import datetime as dt
 import math
 import sys
@@ -9,10 +10,10 @@ from types import SimpleNamespace as NS
 import pytest
 
 from lotse import lauf, logik
-from lotse.konto import Konto, KontoFehler, auf_tick, echte_zahl
+from lotse.konto import Konto, KontoFehler, Kursmeldung, auf_tick, echte_zahl
 from lotse.push import Push
 from lotse.tagebuch import VORSCHLAG, Tagebuch
-from tests.lotse_fakes import UNSET_DOUBLE, FakeIB
+from tests.lotse_fakes import KURSE_TEST, UNSET_DOUBLE, FakeIB, Preisbuch
 
 ROOT = Path(__file__).resolve().parents[1]
 JETZT = dt.datetime(2026, 10, 9, 10, 30)
@@ -60,8 +61,9 @@ def test_config_fehler_werden_benannt():
 
 
 # ---------------------------------------------------------------- Konto
-def konto(ib=None):
-    return Konto("ib-gateway", 4004, 27, "DUO844164", "EBS", "CHF", ib=ib or FakeIB())
+def konto(ib=None, marktdaten=None):
+    ib = ib or FakeIB()
+    return Konto("ib-gateway", 4004, 27, "DUO844164", "EBS", "CHF", ib=ib, marktdaten=marktdaten or Preisbuch(ib))
 
 
 def test_konto_nur_paper():
@@ -88,9 +90,9 @@ def test_konto_liest_cash_chf_positionen_kurse():
     assert k.cash() == 2500.0
     assert k.positionen() == {"VWRL": 3.25, "AAPL": 10}  # alle – Regel 17 entscheidet, was Lotse anfasst
     kurse = k.kurse(["VWRL", "CHCORP", "FEHLT"])
-    assert kurse["VWRL"] == logik.Kurs(155.3, dt.date(2026, 10, 9))
-    assert kurse["CHCORP"] == logik.Kurs(99.5, dt.date(2026, 10, 8))  # kein letzter Kurs -> Schlusskurs
-    assert kurse["FEHLT"].wert is None
+    assert kurse["VWRL"] == Kursmeldung(155.3, dt.date(2026, 10, 9), "CHF", "Yahoo")
+    assert kurse["CHCORP"] == Kursmeldung(99.5, dt.date(2026, 10, 8), "CHF", "Yahoo")
+    assert kurse["FEHLT"] == Kursmeldung(None, None, None, None)
 
 
 def test_konto_offene_orders_und_ausfuehrungen_nur_von_lotse():
@@ -157,7 +159,7 @@ def test_letzter_handelstag_der_six_mit_feiertagen():
 # ---------------------------------------------------------------- Lauf
 def lauf_mit(tmp_path, modus="VORSCHLAG", ib=None, wertpapiere=None):
     cfg, text = lauf.lies_config()
-    cfg = {**cfg, "modus": modus, "wertpapiere": wertpapiere or {"aktien": "VWRL", "anleihen": "CHCORP"}}
+    cfg = {**cfg, "kurse": KURSE_TEST, "modus": modus, "wertpapiere": wertpapiere or {"aktien": "VWRL", "anleihen": "CHCORP"}}
     ib = ib or FakeIB()
     ib.preise = ib.preise or {"VWRL": (155.3, 155.0, JETZT), "CHCORP": (99.0, 99.0, JETZT)}
     push = Push()
@@ -247,7 +249,7 @@ def test_lauf_vermerkt_mindestdepot_einmal(tmp_path, monkeypatch):
 
     monkeypatch.setattr(logik, "plane", plane)
     cfg, text = lauf.lies_config()
-    cfg = {**cfg, "wertpapiere": {"aktien": "VWRL", "anleihen": "CHCORP"},
+    cfg = {**cfg, "kurse": KURSE_TEST, "wertpapiere": {"aktien": "VWRL", "anleihen": "CHCORP"},
            "grenzen": {**cfg["grenzen"], "mindestdepot": 300}}  # Lotse-Geld 300 = genau erreicht
     ib = FakeIB()
     ib.preise = {"VWRL": (155.3, 155.0, JETZT), "CHCORP": (99.0, 99.0, JETZT)}
@@ -264,82 +266,6 @@ def test_konto_kommission_nur_wenn_ibkr_sie_gemeldet_hat():
     ib.ausfuehrung("lotse-1-2", "E2")  # noch keine Meldung: ib_async hat commission 0, execId leer
     gebuehren = {a.exec_id: a.gebuehr for a in konto(ib).ausfuehrungen()}
     assert gebuehren == {"E1": 1.25, "E2": None}
-
-
-# ---------------------------------------------------------------- Kurse: historisch zuerst, verzögert als Fallback
-GESTERN = dt.date(2026, 10, 8)
-
-
-def test_kurs_kommt_aus_dem_letzten_tages_schlusskurs_ohne_live_abfrage():
-    ib = FakeIB()
-    ib.historie = {"SSAC": [(dt.date(2026, 10, 7), 101.0), (GESTERN, 102.5)]}
-    k = konto(ib)
-    kurse = k.kurse(["SSAC"])
-    assert kurse["SSAC"] == logik.Kurs(102.5, GESTERN)  # jüngster Balken, mit seinem Datum
-    assert ib.ticker_aufrufe == [] and k.kursquellen == {"SSAC": "historisch"}
-    (symbol, zeitraum, balken, art, nur_handelszeit), = ib.historie_aufrufe
-    assert (balken, nur_handelszeit) == ("1 day", True)
-
-
-@pytest.mark.parametrize("datum", ["20261008", dt.datetime(2026, 10, 8, 17, 30)])
-def test_kurs_datum_aus_text_oder_zeitpunkt(datum):
-    ib = FakeIB()
-    ib.historie = {"SSAC": [(datum, 102.5)]}
-    assert konto(ib).kurse(["SSAC"])["SSAC"] == logik.Kurs(102.5, GESTERN)
-
-
-def test_ohne_historie_fallback_auf_verzoegerte_daten():
-    ib = FakeIB()  # historie leer: so antwortet IBKR bei Error 354/162
-    ib.preise = {"CSBGC7": (float("nan"), 98.75, dt.datetime(2026, 10, 9, 9, 15))}
-    k = konto(ib)
-    assert k.kurse(["CSBGC7"])["CSBGC7"] == logik.Kurs(98.75, dt.date(2026, 10, 9))
-    assert ib.md_typen[-1] == 3 and k.kursquellen == {"CSBGC7": "verzögert"}
-
-
-def test_historie_mit_fehler_fallback_auf_verzoegerte_daten():
-    ib = FakeIB()
-    ib.historie_fehler = True
-    ib.preise = {"SSAC": (102.0, 101.0, dt.datetime(2026, 10, 9, 10, 0))}
-    assert konto(ib).kurse(["SSAC"])["SSAC"] == logik.Kurs(102.0, dt.date(2026, 10, 9))
-
-
-def test_unbrauchbare_balken_werden_uebersprungen():
-    ib = FakeIB()
-    ib.historie = {"SSAC": [(GESTERN, 101.0), (dt.date(2026, 10, 9), float("nan")), (None, 103.0)]}
-    assert konto(ib).kurse(["SSAC"])["SSAC"] == logik.Kurs(101.0, GESTERN)
-
-
-def test_weder_historie_noch_verzoegert_kurs_fehlt():
-    k = konto(FakeIB())
-    assert k.kurse(["SSAC"])["SSAC"] == logik.Kurs(None, None) and k.kursquellen == {}
-
-
-def lauf_mit_historie(tmp_path, historie, modus="VORSCHLAG"):
-    cfg, text = lauf.lies_config()
-    cfg = {**cfg, "modus": modus, "wertpapiere": {"aktien": "SSAC", "anleihen": "CSBGC7"}}
-    ib = FakeIB()
-    ib.historie = historie
-    push = Push()
-    ergebnis = lauf.laufe(cfg, text, konto(ib), Tagebuch(str(tmp_path)), push, JETZT,
-                          handelstag=lambda d: GESTERN)
-    return ergebnis, push, ib
-
-
-def test_schlusskurs_von_gestern_ist_frisch_genug(tmp_path):
-    ergebnis, push, ib = lauf_mit_historie(tmp_path, {"SSAC": [(GESTERN, 102.5)], "CSBGC7": [(GESTERN, 98.7)]})
-    assert ergebnis.ok and ergebnis.orders == 1 and ib.ticker_aufrufe == []
-    assert "Kurse: SSAC historisch (08.10.), CSBGC7 historisch (08.10.)" in push.gesendet[-1]["message"]
-
-
-def test_schlusskurs_aelter_als_ein_handelstag_stoppt_ueber_regel_0(tmp_path):
-    alt = dt.date(2026, 10, 6)
-    ergebnis, push, ib = lauf_mit_historie(tmp_path, {"SSAC": [(alt, 102.5)], "CSBGC7": [(GESTERN, 98.7)]})
-    assert not ergebnis.ok and "SSAC" in ergebnis.text and "zu alt" in ergebnis.text and ib.gesendet == []
-
-
-def test_kein_kurs_ueber_beide_wege_stoppt_ueber_regel_0(tmp_path):
-    ergebnis, push, ib = lauf_mit_historie(tmp_path, {"SSAC": [(GESTERN, 102.5)]})  # CSBGC7: nichts
-    assert not ergebnis.ok and "Kurs von CSBGC7 fehlt" in ergebnis.text
 
 
 # ---------------------------------------------------------------- Ausschüttungen über Flex
@@ -385,11 +311,11 @@ def paper_lauf_mit_flex(tmp_path, monkeypatch, query_id="123", token="tok"):
     else:
         monkeypatch.delenv("LOTSE_FLEX_TOKEN", raising=False)
     cfg, text = lauf.lies_config()
-    cfg = {**cfg, "modus": "PAPER", "dividenden": {"flex_query_id": query_id}}
+    cfg = {**cfg, "kurse": KURSE_TEST, "modus": "PAPER", "dividenden": {"flex_query_id": query_id}}
     ib = FakeIB()
     ib.pos = {"CSBGC7": 2.0}
-    ib.historie = {"SSAC": [(dt.date(2026, 10, 8), 102.5)], "CSBGC7": [(dt.date(2026, 10, 8), 98.7)]}
-    k = Konto("h", 1, 27, "DUO844164", "EBS", "CHF", ib=ib, flex=FakeFlex)
+    ib.preise = {"SSAC": (102.5, 102.5, dt.date(2026, 10, 8)), "CSBGC7": (98.7, 98.7, dt.date(2026, 10, 8))}
+    k = Konto("h", 1, 27, "DUO844164", "EBS", "CHF", ib=ib, flex=FakeFlex, marktdaten=Preisbuch(ib))
     push = Push()
     ergebnis = lauf.laufe(cfg, text, k, Tagebuch(str(tmp_path)), push, JETZT, handelstag=lambda d: dt.date(2026, 10, 8))
     return ergebnis, push
@@ -422,10 +348,10 @@ def test_lauf_ohne_flex_meldet_dass_ausschuettungen_fehlen(tmp_path, monkeypatch
 # ---------------------------------------------------------------- Ohne Budget: Einzahlung bestätigen
 def lauf_ohne_budget(tmp_path, cash, bestaetigt=False):
     cfg, text = lauf.lies_config()
-    cfg = {**cfg, "modus": "PAPER", "grenzen": {**cfg["grenzen"], "budget_chf": 0}}
+    cfg = {**cfg, "kurse": KURSE_TEST, "modus": "PAPER", "grenzen": {**cfg["grenzen"], "budget_chf": 0}}
     ib = FakeIB()
     ib.cash = cash
-    ib.historie = {"SSAC": [(dt.date(2026, 10, 8), 102.5)], "CSBGC7": [(dt.date(2026, 10, 8), 98.7)]}
+    ib.preise = {"SSAC": (102.5, 102.5, dt.date(2026, 10, 8)), "CSBGC7": (98.7, 98.7, dt.date(2026, 10, 8))}
     push = Push()
     ergebnis = lauf.laufe(cfg, text, konto(ib), Tagebuch(str(tmp_path)), push, JETZT,
                           handelstag=lambda d: dt.date(2026, 10, 8), einzahlung_bestaetigt=bestaetigt)
@@ -445,3 +371,77 @@ def test_ohne_budget_normale_einzahlung_wird_angelegt(tmp_path):
     Tagebuch(str(tmp_path)).vermerke_kasse(1, 1000.0, 0.0, JETZT)
     ergebnis, push, ib = lauf_ohne_budget(tmp_path, 1800.0)  # 800 eingezahlt
     assert ergebnis.ok and len(ib.gesendet) == 1
+
+
+# ---------------------------------------------------------------- Kurse über quantdesk.marketdata (eingesetzt, kein Netz)
+GESTERN = dt.date(2026, 10, 8)
+
+
+def lauf_kurse(tmp_path, preise, abweichend=None, modus="PAPER"):
+    cfg, text = lauf.lies_config()  # echte Config: SSAC -> SSAC.SW, CSBGC7 -> CSBGC7.SW
+    cfg = {**cfg, "modus": modus}
+    ib = FakeIB()
+    ib.preise = preise
+    quelle = Preisbuch(ib, abweichend=abweichend)
+    push = Push()
+    ergebnis = lauf.laufe(cfg, text, konto(ib, quelle), Tagebuch(str(tmp_path)), push, JETZT,
+                          handelstag=lambda d: GESTERN)
+    return ergebnis, push, ib, quelle
+
+
+FRISCH = {"SSAC": (102.76, 102.76, GESTERN), "CSBGC7": (72.97, 72.97, GESTERN)}
+
+
+def test_kurse_von_yahoo_order_ueber_ibkr(tmp_path):
+    ergebnis, push, ib, quelle = lauf_kurse(tmp_path, FRISCH)
+    assert ergebnis.ok and quelle.gefragt == ["SSAC", "CSBGC7"]
+    (symbol, order), = ib.gesendet  # die Order geht über IBKR an EBS
+    assert symbol == "SSAC" and order.tif == "DAY" and order.lmtPrice > 102.76
+    meldung = push.gesendet[-1]["message"]
+    assert "SSAC 102.76 CHF von Yahoo (08.10.)" in meldung and "CSBGC7 72.97 CHF von Yahoo (08.10.)" in meldung
+
+
+def test_kursquelle_steht_im_tagebuch(tmp_path):
+    lauf_kurse(tmp_path, FRISCH)
+    zeilen = [json.loads(z) for z in (tmp_path / "laeufe.jsonl").read_text(encoding="utf-8").splitlines()]
+    kurse = next(z["kurse"] for z in zeilen if z["ereignis"] == "kurse")
+    assert kurse["SSAC"] == {"wert": 102.76, "datum": "2026-10-08", "waehrung": "CHF", "quelle": "Yahoo"}
+
+
+@pytest.mark.parametrize("quelle,waehrung", [("Yahoo", "USD"), ("Stooq", None)])
+def test_kurs_nicht_in_chf_regel_0_statt_umrechnen(tmp_path, quelle, waehrung):
+    ergebnis, push, ib, _ = lauf_kurse(tmp_path, FRISCH, abweichend={"SSAC": (quelle, waehrung)})
+    assert not ergebnis.ok and "SSAC" in ergebnis.text and "nicht umgerechnet" in ergebnis.text
+    assert ib.gesendet == [] and push.gesendet[-1]["title"] == "Lotse – keine Order"
+
+
+def test_kurs_von_vorgestern_regel_0_zu_alt(tmp_path):
+    ergebnis, push, ib, _ = lauf_kurse(tmp_path, {**FRISCH, "CSBGC7": (72.9, 72.9, dt.date(2026, 10, 6))})
+    assert not ergebnis.ok and "CSBGC7" in ergebnis.text and "zu alt" in ergebnis.text and ib.gesendet == []
+
+
+def test_kein_kurs_regel_0_fehlt(tmp_path):
+    ergebnis, push, ib, _ = lauf_kurse(tmp_path, {"SSAC": FRISCH["SSAC"]})
+    assert not ergebnis.ok and "Kurs von CSBGC7 fehlt" in ergebnis.text
+
+
+def test_config_kurs_symbole_werden_geprueft():
+    cfg, _ = lauf.lies_config()
+    ohne = {**cfg, "kurse": {"symbole": {"SSAC": {"yahoo": "SSAC.SW"}}}}
+    assert lauf.pruefe_config(ohne)[0].startswith("[kurse.symbole] fehlt für: CSBGC7")
+    leer = {**cfg, "kurse": {"symbole": {"SSAC": {"yahoo": "SSAC.SW"}, "CSBGC7": {"yahoo": "", "stooq": ""}}}}
+    assert lauf.pruefe_config(leer)[0].startswith("[kurse.symbole] fehlt für: CSBGC7")
+    assert cfg["kurse"]["symbole"]["SSAC"] == {"yahoo": "SSAC.SW", "stooq": ""}
+
+
+def test_lauf_baut_marketdata_ohne_ibkr_mit_mapping_aus_der_config(monkeypatch):
+    gebaut = {}
+
+    class Marktdaten:
+        def __init__(self, broker=None, symbole=None):
+            gebaut["broker"], gebaut["symbole"] = broker, symbole
+
+    monkeypatch.setattr("quantdesk.marketdata.MarketData", Marktdaten)
+    monkeypatch.setattr(lauf, "Konto", lambda *a, **k: (_ for _ in ()).throw(KontoFehler("nur bauen (Test)")))
+    assert lauf.main([]) == 1
+    assert gebaut["broker"] is None and gebaut["symbole"]["CSBGC7"]["yahoo"] == "CSBGC7.SW"
