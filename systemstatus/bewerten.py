@@ -69,6 +69,7 @@ def zeile(titel: str, wert=None, *, zeit: float | None = None, zone: str | None 
 
 
 def kasten(kid: str, titel: str, befund: Befund, kurz: str, zeilen: list[dict], **extra) -> dict:
+    """Ein Kasten. Optional `kurztitel`: kürzerer Name für die Skizze (auf dem Handy ist dort wenig Platz)."""
     return {"id": kid, "titel": titel, "stufe": befund.stufe, "kurz": kurz, "gruende": befund.gruende,
             "zeilen": zeilen, **extra}
 
@@ -472,7 +473,7 @@ def bewerte_bot(eintrag: dict, daten: dict, jetzt: float) -> dict:
 def bewerte_backup(bk: dict, jetzt: float) -> dict:
     if not bk.get("eingerichtet"):
         return kasten("backup", "Backup (Backblaze B2)", Befund(GRAU), "noch nicht eingerichtet",
-                      [zeile("Eingerichtet", "nein – RESTIC_REPOSITORY in .env leer")])
+                      [zeile("Eingerichtet", "nein – RESTIC_REPOSITORY in .env leer")], kurztitel="Backup B2")
     b = Befund()
     letzter = bk.get("letzter_snapshot")
     if letzter is None:
@@ -484,13 +485,13 @@ def bewerte_backup(bk: dict, jetzt: float) -> dict:
     zeilen = [zeile("Eingerichtet", "ja"),
               zeile("Letzter Snapshot", zeit=letzter) if letzter else zeile("Letzter Snapshot", "keiner in den Logs")]
     kurz = b.gruende[0] if b.gruende else f"vor {dauer(jetzt - letzter)}"
-    return kasten("backup", "Backup (Backblaze B2)", b, kurz, zeilen)
+    return kasten("backup", "Backup (Backblaze B2)", b, kurz, zeilen, kurztitel="Backup B2")
 
 
 def bewerte_totmann(tm: dict) -> dict:
     if not tm.get("eingerichtet"):
         return kasten("totmann", "Totmannschalter (Healthchecks.io)", Befund(GRAU), "noch nicht eingerichtet",
-                      [zeile("Eingerichtet", "nein – HEALTHCHECKS_URL in .env leer")])
+                      [zeile("Eingerichtet", "nein – HEALTHCHECKS_URL in .env leer")], kurztitel="Totmannschalter")
     b = Befund()
     if tm.get("ping_fehler") is None:
         b.gelb("Ping-Ergebnis unbekannt")
@@ -500,7 +501,8 @@ def bewerte_totmann(tm: dict) -> dict:
     zeilen = [zeile("Eingerichtet", "ja"),
               zeile("Letzter Ping-Versuch", zeit=versuch) if versuch else zeile("Letzter Ping-Versuch", "unbekannt"),
               zeile("Ping-Fehler in 48 h", {True: "ja", False: "keine", None: "unbekannt"}[tm.get("ping_fehler")])]
-    return kasten("totmann", "Totmannschalter (Healthchecks.io)", b, b.gruende[0] if b.gruende else "pingt", zeilen)
+    return kasten("totmann", "Totmannschalter (Healthchecks.io)", b, b.gruende[0] if b.gruende else "pingt", zeilen,
+                  kurztitel="Totmannschalter")
 
 
 # ====================================================================== alles zusammen

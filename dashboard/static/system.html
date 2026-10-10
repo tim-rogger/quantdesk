@@ -11,7 +11,8 @@
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="stylesheet" href="/static/style.css">
-  <link rel="stylesheet" href="/static/system.css">
+  <!-- ?v=… bei jeder Änderung erhöhen, sonst zeigt das Handy die alte Datei aus seinem Cache -->
+  <link rel="stylesheet" href="/static/system.css?v=1">
 </head>
 <body>
   <header>
@@ -43,6 +44,6 @@
   <p class="muted small footer">Nur zum Anschauen. Neu starten: über Tailscale im Terminal.<br>
     Stand: <span id="stand">–</span></p>
 
-  <script src="/static/system.js"></script>
+  <script src="/static/system.js?v=2"></script>
 </body>
 </html>
