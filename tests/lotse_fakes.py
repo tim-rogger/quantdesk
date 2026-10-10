@@ -82,7 +82,9 @@ class FakeIB:
                    filledQuantity=UNSET_DOUBLE)  # so liefert ib_async offene Orders
         self.offen.append(NS(contract=NS(symbol=symbol), order=order, orderStatus=NS(status="Submitted")))
 
-    def ausfuehrung(self, ref, exec_id, symbol="VWRL", seite="BOT", menge=1.0, preis=155.0):
-        self.fills.append(NS(contract=NS(symbol=symbol),
+    def ausfuehrung(self, ref, exec_id, symbol="VWRL", seite="BOT", menge=1.0, preis=155.0, kommission=None):
+        """kommission=None: IBKR hat die Gebühr noch nicht gemeldet (ib_async: execId leer, commission 0)."""
+        bericht = NS(execId=exec_id, commission=kommission) if kommission is not None else NS(execId="", commission=0.0)
+        self.fills.append(NS(contract=NS(symbol=symbol), commissionReport=bericht,
                              execution=NS(execId=exec_id, orderRef=ref, side=seite, shares=menge, price=preis,
                                           time=dt.datetime(2026, 10, 9, 10, 0))))

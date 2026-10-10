@@ -52,13 +52,13 @@ def frisch(wert=100.0):
     return Kurs(wert, HANDELSTAG)
 
 
-def lage(cash, stueck=None, eigene=None, kurse=None, gesamt_letzter_lauf=None, heute_betrag=0.0, heute_orders=0,
+def lage(cash, stueck=None, eigene=None, kurse=None, mindestdepot_erreicht=False, heute_betrag=0.0, heute_orders=0,
          investiert=None):
     """investiert: ohne Angabe = Wert der Positionen zu 100 CHF (so viel hat Lotse dafür bezahlt)."""
     stueck = stueck or {}
     return Lage(cash=cash, stueck=stueck, eigene_stueck=dict(stueck) if eigene is None else eigene,
                 kurse=kurse or {"AKTIEN": frisch(), "ANLEIHEN": frisch()}, letzter_handelstag=HANDELSTAG,
-                gesamt_letzter_lauf=gesamt_letzter_lauf, heute_betrag=heute_betrag, heute_orders=heute_orders,
+                mindestdepot_erreicht=mindestdepot_erreicht, heute_betrag=heute_betrag, heute_orders=heute_orders,
                 investiert=sum(stueck.values()) * 100.0 if investiert is None else investiert)
 
 
@@ -104,8 +104,18 @@ def test_regel_5_wert_ist_stueck_mal_kurs():
     assert werte == {"AKTIEN": pytest.approx(125.0), "ANLEIHEN": pytest.approx(200.0)}
 
 
-def test_regel_5_gesamt_ist_summe_plus_cash():
-    assert regel_5_gesamt({"AKTIEN": 125.0, "ANLEIHEN": 200.0}, 50.0) == pytest.approx(375.0)
+def test_regel_5_gesamt_ist_summe_plus_lotse_geld():
+    assert regel_5_gesamt({"AKTIEN": 125.0, "ANLEIHEN": 200.0}, cash=50.0, budget=10_000.0,
+                          investiert=0.0) == pytest.approx(375.0)
+
+
+def test_regel_5_gesamt_zaehlt_nur_lotse_geld_nicht_das_ganze_konto():
+    # Konto 1 Mio. (auch Bot C), Budget 300, schon 250 verbraucht: Lotse-Geld = 50
+    assert regel_5_gesamt({"AKTIEN": 200.0}, cash=1_000_000.0, budget=300.0, investiert=250.0) == pytest.approx(250.0)
+
+
+def test_regel_5_gesamt_lotse_geld_nie_negativ():
+    assert regel_5_gesamt({"AKTIEN": 200.0}, cash=100.0, budget=300.0, investiert=350.0) == pytest.approx(200.0)
 
 
 def test_regel_6_abweichung_in_prozentpunkten():
@@ -185,6 +195,7 @@ def test_regel_10_ab_mindestdepot_alle():
 
 @pytest.mark.parametrize("gesamt,abweichung,erwartet", [
     (5000.0, 7.0, True),    # über Mindestdepot, über Schwelle
+    (2000.0, 7.0, True),    # genau auf dem Mindestdepot: erreicht (≥)
     (5000.0, 5.0, False),   # genau auf der Schwelle: nicht darüber
     (5000.0, 4.0, False),   # unter Schwelle
     (1999.0, 7.0, False),   # unter Mindestdepot
@@ -193,13 +204,15 @@ def test_regel_11_umschichten_nur_ueber_mindestdepot_und_schwelle(gesamt, abweic
     assert regel_11_umschichten(gesamt, abweichung, mindestdepot=2000.0, schwelle=5.0) is erwartet
 
 
-@pytest.mark.parametrize("gesamt,letzter,erwartet", [
-    (2100.0, 1950.0, True),   # gerade darüber gestiegen
-    (2100.0, 2050.0, False),  # war schon darüber
-    (1900.0, 1800.0, False),  # noch darunter
+@pytest.mark.parametrize("gesamt,schon_erreicht,erwartet", [
+    (2100.0, False, True),    # zum ersten Mal erreicht
+    (2000.0, False, True),    # genau 2000 zählt als erreicht (≥)
+    (2100.0, True, False),    # im Tagebuch schon vermerkt
+    (1500.0, True, False),    # wieder darunter gefallen: Vermerk bleibt, nie "erstmals" neu
+    (1999.99, False, False),  # noch nicht erreicht
 ])
-def test_regel_12_erstmals_ueber_mindestdepot(gesamt, letzter, erwartet):
-    assert regel_12_erstmals_ueber_mindestdepot(gesamt, letzter, 2000.0) is erwartet
+def test_regel_12_erstmals_ueber_mindestdepot(gesamt, schon_erreicht, erwartet):
+    assert regel_12_erstmals_ueber_mindestdepot(gesamt, schon_erreicht, 2000.0) is erwartet
 
 
 def test_regel_13_abbau_liste_nie_kaufen():
@@ -295,18 +308,18 @@ def test_fall_depot_1999_nur_wertpapier_1():
 
 
 def test_fall_depot_springt_auf_2100_anleihen_0_kein_verkauf():
-    plan = plane(lage(100.0, stueck={"AKTIEN": 20.0}, gesamt_letzter_lauf=1950.0), EINSTELLUNGEN)
+    plan = plane(lage(100.0, stueck={"AKTIEN": 20.0}, mindestdepot_erreicht=False), EINSTELLUNGEN)
     assert plan.abbruch is None and verkaeufe(plan) == []
 
 
 def test_fall_abweichung_4_prozentpunkte_depot_5000_nichts():
-    plan = plane(lage(0.0, stueck={"AKTIEN": 44.5, "ANLEIHEN": 5.5}, gesamt_letzter_lauf=5000.0), EINSTELLUNGEN)
+    plan = plane(lage(0.0, stueck={"AKTIEN": 44.5, "ANLEIHEN": 5.5}, mindestdepot_erreicht=True), EINSTELLUNGEN)
     assert plan.abbruch is None and plan.orders == []
 
 
 def test_fall_abweichung_7_prozentpunkte_depot_5000_umschichtung():
     # AKTIEN 4600 (92 % = +7), ANLEIHEN 200, Cash 200 → Gesamt 5000. Der Kauf geht aus dem Cash, nicht aus dem Erlös.
-    plan = plane(lage(200.0, stueck={"AKTIEN": 46.0, "ANLEIHEN": 2.0}, gesamt_letzter_lauf=5000.0), EINSTELLUNGEN)
+    plan = plane(lage(200.0, stueck={"AKTIEN": 46.0, "ANLEIHEN": 2.0}, mindestdepot_erreicht=True), EINSTELLUNGEN)
     assert plan.abbruch is None
     verkauf = verkaeufe(plan, "AKTIEN")
     assert len(verkauf) == 1 and 0 < verkauf[0].betrag <= 350.0  # höchstens 7 % von 5000
@@ -327,7 +340,7 @@ def test_fall_kurs_null_negativ_nan_inf_abbruch(wert):
 
 def test_fall_bot_besitzt_3_hat_2_gekauft_hoechstens_2_verkauft():
     # AKTIEN deutlich zu schwer: Verkauf ja, aber nie mehr als die 2 eigenen Stück (= 200 CHF)
-    plan = plane(lage(0.0, stueck={"AKTIEN": 3.0}, eigene={"AKTIEN": 2.0}, gesamt_letzter_lauf=5000.0),
+    plan = plane(lage(0.0, stueck={"AKTIEN": 3.0}, eigene={"AKTIEN": 2.0}, mindestdepot_erreicht=True),
                  Einstellungen(ziel={"AKTIEN": 10.0, "ANLEIHEN": 90.0}, abbau=(),
                                grenzen=replace(GRENZEN, mindestdepot=100.0)))
     assert plan.abbruch is None
@@ -335,18 +348,38 @@ def test_fall_bot_besitzt_3_hat_2_gekauft_hoechstens_2_verkauft():
 
 
 def test_fall_fremdes_papier_im_depot_wird_nicht_angefasst():
-    plan = plane(lage(500.0, stueck={"AKTIEN": 30.0, "NESN": 10.0}), EINSTELLUNGEN)
+    plan = plane(lage(500.0, stueck={"AKTIEN": 30.0, "NESN": 10.0}, eigene={"AKTIEN": 30.0}, investiert=3000.0),
+                 EINSTELLUNGEN)
     assert plan.abbruch is None and all(o.papier != "NESN" for o in plan.orders)
+
+
+def test_fall_genau_2000_erstmals_erreicht_kein_verkauf_wertpapier_2_kaufbar():
+    # eigene AKTIEN 1700 + Lotse-Geld 300 = genau 2000: erreicht, aber erstmals → nicht umschichten
+    plan = plane(lage(300.0, stueck={"AKTIEN": 17.0}), EINSTELLUNGEN)
+    assert plan.abbruch is None and verkaeufe(plan) == []
+    assert kaeufe(plan, "ANLEIHEN")[0].betrag == pytest.approx(294.0)  # ab 2000 darf Wertpapier 2 gekauft werden
+
+
+def test_fall_knapp_unter_2000_nur_wertpapier_1():
+    plan = plane(lage(299.99, stueck={"AKTIEN": 17.0}), EINSTELLUNGEN)  # 1999.99
+    assert plan.abbruch is None and plan.orders and all(o.papier == "AKTIEN" for o in plan.orders)
+
+
+def test_fall_fremde_stueck_im_konto_zaehlen_nicht():
+    # Konto zeigt 30 AKTIEN, Lotse hat selbst keine gekauft: Depot = nur Lotse-Geld 500 → Kauf, kein Verkauf
+    plan = plane(lage(500.0, stueck={"AKTIEN": 30.0}, eigene={}, investiert=0.0), EINSTELLUNGEN)
+    assert plan.abbruch is None and verkaeufe(plan) == []
+    assert kaeufe(plan, "AKTIEN")[0].betrag == pytest.approx(492.0)  # 500 − 3 − 5 (unter Mindestdepot: alles)
 
 
 def test_fall_abbau_papier_unterdeckt_kein_kauf():
     e = Einstellungen(ziel=ZIEL, abbau=("ANLEIHEN",), grenzen=GRENZEN)
-    plan = plane(lage(600.0, stueck={"AKTIEN": 30.0}, gesamt_letzter_lauf=3500.0), e)
+    plan = plane(lage(600.0, stueck={"AKTIEN": 30.0}, mindestdepot_erreicht=True), e)
     assert plan.abbruch is None and kaeufe(plan, "ANLEIHEN") == []
 
 
 def test_fall_vierte_order_am_selben_tag_abbruch():
-    plan = plane(lage(600.0, stueck={"AKTIEN": 30.0}, gesamt_letzter_lauf=3500.0, heute_betrag=300.0,
+    plan = plane(lage(600.0, stueck={"AKTIEN": 30.0}, mindestdepot_erreicht=True, heute_betrag=300.0,
                       heute_orders=3), EINSTELLUNGEN)
     assert plan.abbruch is not None and plan.orders == []
 

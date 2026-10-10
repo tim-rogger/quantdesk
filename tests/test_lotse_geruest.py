@@ -185,7 +185,8 @@ def test_vorschlag_ganzer_lauf_mit_echter_logik(tmp_path):
     ergebnis, push, ib = lauf_mit(tmp_path)
     assert ergebnis.ok and ergebnis.orders == 1 and ib.gesendet == []  # VORSCHLAG: nichts an den Broker
     assert "KAUF VWRL" in ergebnis.text and "(294.00 CHF)" in ergebnis.text
-    assert Tagebuch(str(tmp_path)).gesamt_letzter_lauf() == 10_000.0  # für Regel 12 gemerkt
+    assert Tagebuch(str(tmp_path)).gesamt_letzter_lauf() == 300.0  # Lotse-Depot: nur Lotse-Geld (Budget), nicht 10'000
+    assert Tagebuch(str(tmp_path)).mindestdepot_erreicht() is False
 
 
 def test_fehlender_kurs_stoppt_den_ganzen_lauf(tmp_path):
@@ -227,4 +228,33 @@ def test_lage_enthaelt_was_die_logik_braucht(tmp_path, monkeypatch):
     lage = gesehen["lage"]
     assert lage.cash == 1234.0 and lage.stueck == {"VWRL": 2.0, "AAPL": 5} and lage.eigene_stueck == {}
     assert set(lage.kurse) == {"VWRL", "CHCORP"} and lage.letzter_handelstag == dt.date(2026, 10, 8)
-    assert (lage.heute_betrag, lage.heute_orders, lage.investiert) == (0.0, 0, 0.0)
+    assert (lage.heute_betrag, lage.heute_orders, lage.investiert, lage.mindestdepot_erreicht) == (0.0, 0, 0.0, False)
+
+
+def test_lauf_vermerkt_mindestdepot_einmal(tmp_path, monkeypatch):
+    gesehen = []
+    echte_plane = logik.plane
+
+    def plane(lage, e):
+        gesehen.append(lage.mindestdepot_erreicht)
+        return echte_plane(lage, e)
+
+    monkeypatch.setattr(logik, "plane", plane)
+    cfg, text = lauf.lies_config()
+    cfg = {**cfg, "wertpapiere": {"aktien": "VWRL", "anleihen": "CHCORP"},
+           "grenzen": {**cfg["grenzen"], "mindestdepot": 300}}  # Lotse-Geld 300 = genau erreicht
+    ib = FakeIB()
+    ib.preise = {"VWRL": (155.3, 155.0, JETZT), "CHCORP": (99.0, 99.0, JETZT)}
+    for _ in range(2):
+        lauf.laufe(cfg, text, konto(ib), Tagebuch(str(tmp_path)), Push(), JETZT,
+                   handelstag=lambda d: dt.date(2026, 10, 8))
+    assert gesehen == [False, True]  # erster Lauf: "erstmals", danach vermerkt
+    assert Tagebuch(str(tmp_path)).mindestdepot_erreicht() is True
+
+
+def test_konto_kommission_nur_wenn_ibkr_sie_gemeldet_hat():
+    ib = FakeIB()
+    ib.ausfuehrung("lotse-1-1", "E1", kommission=1.25)
+    ib.ausfuehrung("lotse-1-2", "E2")  # noch keine Meldung: ib_async hat commission 0, execId leer
+    gebuehren = {a.exec_id: a.gebuehr for a in konto(ib).ausfuehrungen()}
+    assert gebuehren == {"E1": 1.25, "E2": None}

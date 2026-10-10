@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import logging
+import math
 import os
 import sys
 import tomllib
@@ -101,8 +102,10 @@ def gleiche_ab(konto: Konto, tagebuch: Tagebuch, jetzt: dt.datetime) -> list[str
     hinweise = []
     ausfuehrungen = konto.ausfuehrungen()
     for a in ausfuehrungen:  # Regel 15: nur die gemeldete Menge zählt
-        if tagebuch.buche_ausfuehrung(a.ref, a.exec_id, a.papier, a.seite, a.menge, a.preis, jetzt):
+        if tagebuch.buche_ausfuehrung(a.ref, a.exec_id, a.papier, a.seite, a.menge, a.preis, jetzt, a.gebuehr):
             hinweise.append(f"{a.papier}: {a.seite} {a.menge:g} Stück zu {a.preis} gebucht ({a.ref})")
+        elif a.gebuehr is not None and a.exec_id in tagebuch.ohne_gebuehr():
+            tagebuch.buche_gebuehr(a.exec_id, a.gebuehr, jetzt)  # Kommission kam erst nach der Ausführung
     beim_broker = {o.ref for o in konto.offene_orders()} | {a.ref for a in ausfuehrungen}
     for ref in tagebuch.unbestaetigt():  # notiert, aber Senden nie bestätigt (Absturz)
         if ref in beim_broker:
@@ -144,7 +147,7 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
         heute_betrag, heute_orders = tagebuch.heute(jetzt.date())
         lage = logik.Lage(cash=konto.cash(), stueck=konto.positionen(), eigene_stueck=tagebuch.eigene_stueck(),
                           kurse=konto.kurse(papiere), letzter_handelstag=handelstag(jetzt.date()),
-                          gesamt_letzter_lauf=tagebuch.gesamt_letzter_lauf(), heute_betrag=heute_betrag,
+                          mindestdepot_erreicht=tagebuch.mindestdepot_erreicht(), heute_betrag=heute_betrag,
                           heute_orders=heute_orders, investiert=tagebuch.investiert())
     except KontoFehler as fehler:
         return _ende(tagebuch, nummer, jetzt, _stopp(push, f"Broker: {fehler}"))
@@ -156,7 +159,7 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
     except NotImplementedError as fehlt:
         return _ende(tagebuch, nummer, jetzt, _stopp(push, f"Logik noch nicht fertig: {fehlt}"))
     if plan.abbruch is not None:  # Regel 0
-        return _ende(tagebuch, nummer, jetzt, _stopp(push, plan.abbruch.grund), _gesamt(lage))
+        return _ende(tagebuch, nummer, jetzt, _stopp(push, plan.abbruch.grund))
 
     zeilen = []
     try:
@@ -180,16 +183,21 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
     text = "\n".join(zeilen) if zeilen else "Nichts zu tun."
     if hinweise:
         text += "\n" + "\n".join(hinweise)
+    gesamt = _gesamt(lage, e)
+    if gesamt is not None and gesamt >= e.grenzen.mindestdepot:  # Regel 12: einmal vermerkt, nie neu errechnet
+        tagebuch.vermerke_mindestdepot(nummer, gesamt, jetzt)
     push.sende(titel, text)
-    return _ende(tagebuch, nummer, jetzt, Ergebnis(True, text, len(zeilen)), _gesamt(lage))
+    return _ende(tagebuch, nummer, jetzt, Ergebnis(True, text, len(zeilen)), gesamt)
 
 
-def _gesamt(lage: logik.Lage) -> float | None:
-    """Depotwert für Regel 12 im Tagebuch merken – mit Tims Regel 5, solange sie noch fehlt: nichts."""
+def _gesamt(lage: logik.Lage, e: logik.Einstellungen) -> float | None:
+    """Lotse-Depotwert (Regel 5) fürs Tagebuch. None, wenn er sich nicht rechnen lässt."""
     try:
-        return logik.regel_5_gesamt(logik.regel_5_werte(lage.stueck, lage.kurse), lage.cash)
+        gesamt = logik.regel_5_gesamt(logik.regel_5_werte(lage.eigene_stueck, lage.kurse), lage.cash,
+                                      e.grenzen.budget_chf, lage.investiert)
     except (NotImplementedError, TypeError):
         return None
+    return gesamt if math.isfinite(gesamt) else None
 
 
 def _stopp(push: Push, grund: str) -> Ergebnis:

@@ -4,6 +4,7 @@ Alles wird nur angehängt, nie überschrieben (JSON Lines, eine Zeile pro Ereign
   laeufe.jsonl         Start und Ende jedes Laufs, mit dem Inhalt der Zieldatei (Regel 1)
   orders.jsonl         jede Order VOR dem Senden notiert, danach abgehakt (Regel 19)
   ausfuehrungen.jsonl  vom Broker gemeldete Ausführungen – nur sie erhöhen den Zähler (Regel 15)
+  gebuehren.jsonl      Kommission je Ausführung (kann später kommen als die Ausführung)
 
 Zustände einer Order: notiert → gesendet → ausgefuehrt | storniert | verworfen; oder notiert → vorschlag.
 Eine notierte, aber nie bestätigte Order wird nie ein zweites Mal gesendet: Der nächste Lauf gleicht sie mit
@@ -37,6 +38,13 @@ def gueltige_menge(menge) -> bool:
     return math.isfinite(menge) and 0 < menge < GROESSTE_MENGE
 
 
+def gueltige_gebuehr(gebuehr) -> bool:
+    """Eine Kommission ist gültig, wenn sie eine endliche Zahl ab 0 ist (0 ist erlaubt, negativ nicht)."""
+    if isinstance(gebuehr, bool) or not isinstance(gebuehr, (int, float)):
+        return False
+    return math.isfinite(gebuehr) and 0 <= gebuehr < GROESSTE_MENGE
+
+
 class Tagebuch:
     def __init__(self, ordner: str):
         self.ordner = ordner
@@ -44,6 +52,7 @@ class Tagebuch:
         self._laeufe = os.path.join(ordner, "laeufe.jsonl")
         self._orders = os.path.join(ordner, "orders.jsonl")
         self._ausfuehrungen = os.path.join(ordner, "ausfuehrungen.jsonl")
+        self._gebuehren = os.path.join(ordner, "gebuehren.jsonl")
 
     # ------------------------------------------------------------------ Dateien
     def _lies(self, pfad: str) -> list[dict]:
@@ -70,6 +79,18 @@ class Tagebuch:
     def lauf_ende(self, nummer: int, ergebnis: str, jetzt: dt.datetime, gesamt: float | None = None) -> None:
         self._schreib(self._laeufe, {"lauf": nummer, "ereignis": "ende", "zeit": jetzt.isoformat(),
                                      "ergebnis": ergebnis, "gesamt": gesamt})
+
+    def mindestdepot_erreicht(self) -> bool:
+        """Wurde schon einmal vermerkt, dass das Depot das Mindestdepot erreicht hat? (Regel 12)"""
+        return any(e["ereignis"] == "mindestdepot_erreicht" for e in self._lies(self._laeufe))
+
+    def vermerke_mindestdepot(self, nummer: int, gesamt: float, jetzt: dt.datetime) -> bool:
+        """Einmal vermerken, dass das Depot das Mindestdepot erreicht hat. Einmal gesetzt, nie wieder."""
+        if self.mindestdepot_erreicht():
+            return False
+        self._schreib(self._laeufe, {"lauf": nummer, "ereignis": "mindestdepot_erreicht", "zeit": jetzt.isoformat(),
+                                     "gesamt": gesamt})
+        return True
 
     def gesamt_letzter_lauf(self) -> float | None:
         """Depotwert des letzten beendeten Laufs, der einen Wert hatte (für Regel 12)."""
@@ -129,7 +150,7 @@ class Tagebuch:
 
     # ------------------------------------------------------------------ eigener Zähler (Regel 15)
     def buche_ausfuehrung(self, ref: str, exec_id: str, papier: str, seite: str, menge, preis,
-                          jetzt: dt.datetime) -> bool:
+                          jetzt: dt.datetime, gebuehr=None) -> bool:
         """Eine vom Broker gemeldete Ausführung buchen. Nur die AUSGEFÜHRTE Menge zählt, nie die Bestellmenge.
 
         Liefert False (und bucht nichts), wenn die Menge ungültig ist (nan, inf, 0, negativ, Platzhalter
@@ -153,15 +174,36 @@ class Tagebuch:
         self._schreib(self._ausfuehrungen, {"exec_id": exec_id, "ref": ref, "papier": papier, "seite": seite,
                                             "menge": float(menge), "preis": float(preis),
                                             "zeit": jetzt.isoformat()})
+        if gebuehr is not None:
+            self.buche_gebuehr(exec_id, gebuehr, jetzt)
         return True
 
+    def buche_gebuehr(self, exec_id: str, gebuehr, jetzt: dt.datetime) -> bool:
+        """Kommission einer gebuchten Ausführung festhalten – einmal je Ausführung, nur gültige Beträge."""
+        if not gueltige_gebuehr(gebuehr):
+            log.error("Gebühr %r zu Ausführung %s ungültig – nicht gebucht", gebuehr, exec_id)
+            return False
+        if not any(e["exec_id"] == exec_id for e in self._lies(self._ausfuehrungen)):
+            return False
+        if any(e["exec_id"] == exec_id for e in self._lies(self._gebuehren)):
+            return False
+        self._schreib(self._gebuehren, {"exec_id": exec_id, "gebuehr": float(gebuehr), "zeit": jetzt.isoformat()})
+        return True
+
+    def ohne_gebuehr(self) -> list[str]:
+        """Ausführungen, zu denen IBKR noch keine Kommission gemeldet hat."""
+        bekannt = {e["exec_id"] for e in self._lies(self._gebuehren)}
+        return [e["exec_id"] for e in self._lies(self._ausfuehrungen) if e["exec_id"] not in bekannt]
+
     def investiert(self) -> float:
-        """CHF, die Lotse netto eingesetzt hat: gekaufte minus verkaufte Ausführungen, jeweils Menge × Preis
-        (ohne Gebühren). Für das Budget in Regel 7."""
+        """CHF, die Lotse netto verbraucht hat (für das Budget in Regel 7): Käufe (Menge × Preis) plus
+        Kommission, minus Verkaufserlöse nach Kommission."""
         summe = 0.0
         for e in self._lies(self._ausfuehrungen):
             vorzeichen = 1 if e["seite"] == "KAUF" else -1
             summe += vorzeichen * e["menge"] * e["preis"]
+        for e in self._lies(self._gebuehren):
+            summe += e["gebuehr"]  # Kommission verbraucht Geld – beim Kauf wie beim Verkauf
         return summe
 
     def eigene_stueck(self) -> dict[str, float]:

@@ -89,14 +89,36 @@ def test_unset_double_als_filled_quantity_erhoeht_den_zaehler_nicht(tmp_path):
     assert tb.eigene_stueck() == {}
 
 
-def test_investiert_ist_netto_eingesetztes_geld(tmp_path):
+def test_investiert_ist_netto_verbrauchtes_cash_inklusive_gebuehren(tmp_path):
     tb = Tagebuch(str(tmp_path))
     k = tb.notiere(1, 1, "VWRL", "KAUF", 300.0, 2.0, 156.0, JETZT)
-    tb.buche_ausfuehrung(k, "E1", "VWRL", "KAUF", 1.5, 150.0, JETZT)  # 225 CHF
+    tb.buche_ausfuehrung(k, "E1", "VWRL", "KAUF", 1.5, 150.0, JETZT, gebuehr=2.0)  # 225 + 2
     v = tb.notiere(2, 1, "VWRL", "VERKAUF", 100.0, 0.5, 150.0, JETZT)
-    tb.buche_ausfuehrung(v, "E2", "VWRL", "VERKAUF", 0.5, 160.0, JETZT)  # −80 CHF
-    assert tb.investiert() == pytest.approx(145.0)
+    tb.buche_ausfuehrung(v, "E2", "VWRL", "VERKAUF", 0.5, 160.0, JETZT)  # Erlös 80, Gebühr kommt später
+    assert tb.investiert() == pytest.approx(147.0) and tb.ohne_gebuehr() == ["E2"]
+    assert tb.buche_gebuehr("E2", 1.5, JETZT)  # Erlös nach Kommission: 78.50
+    assert not tb.buche_gebuehr("E2", 1.5, JETZT)  # nie doppelt
+    assert tb.investiert() == pytest.approx(148.5) and tb.ohne_gebuehr() == []
     assert Tagebuch(str(tmp_path / "leer")).investiert() == 0.0
+
+
+@pytest.mark.parametrize("gebuehr", [UNSET_DOUBLE, math.nan, math.inf, -1.0, None, "2", True])
+def test_ungueltige_gebuehr_wird_nicht_gebucht(tmp_path, gebuehr):
+    tb = Tagebuch(str(tmp_path))
+    k = tb.notiere(1, 1, "VWRL", "KAUF", 300.0, 2.0, 156.0, JETZT)
+    tb.buche_ausfuehrung(k, "E1", "VWRL", "KAUF", 1.0, 150.0, JETZT)
+    assert tb.buche_gebuehr("E1", gebuehr, JETZT) is False and tb.investiert() == pytest.approx(150.0)
+    assert not tb.buche_gebuehr("E9", 1.0, JETZT)  # Ausführung unbekannt
+
+
+def test_mindestdepot_vermerk_einmal_gesetzt_nie_wieder(tmp_path):
+    tb = Tagebuch(str(tmp_path))
+    assert tb.mindestdepot_erreicht() is False
+    assert tb.vermerke_mindestdepot(3, 2010.0, JETZT) is True
+    assert tb.vermerke_mindestdepot(4, 2500.0, JETZT) is False
+    assert Tagebuch(str(tmp_path)).mindestdepot_erreicht() is True  # bleibt auch nach Neustart
+    eintraege = [z for z in (tmp_path / "laeufe.jsonl").read_text(encoding="utf-8").splitlines() if "mindestdepot" in z]
+    assert len(eintraege) == 1
 
 
 def test_ausfuehrung_doppelt_fremd_oder_zu_viel_verkauft_wird_nicht_gebucht(tmp_path):
@@ -154,10 +176,15 @@ def test_gesendete_und_ausgefuehrte_order_wird_gebucht_und_abgeschlossen(tmp_pat
     alt = tb.notiere(1, 1, "VWRL", "KAUF", 96.0, 0.6, 156.0, JETZT)
     tb.abhaken(alt, GESENDET, JETZT, perm_id=4711)
     ib = FakeIB()
-    ib.ausfuehrung(alt, "E1", menge=0.6, preis=155.2)
+    ib.ausfuehrung(alt, "E1", menge=0.6, preis=155.2)  # Kommission noch nicht gemeldet
     paper_lauf(tmp_path, monkeypatch, ib, logik.Plan([]))
     neu = Tagebuch(str(tmp_path))
     assert neu.zustaende()[alt] == AUSGEFUEHRT and neu.eigene_stueck() == {"VWRL": pytest.approx(0.6)}
+    assert neu.investiert() == pytest.approx(0.6 * 155.2) and neu.ohne_gebuehr() == ["E1"]
+    ib.fills = []
+    ib.ausfuehrung(alt, "E1", menge=0.6, preis=155.2, kommission=1.5)  # Kommission kommt beim nächsten Lauf
+    paper_lauf(tmp_path, monkeypatch, ib, logik.Plan([]))
+    assert Tagebuch(str(tmp_path)).investiert() == pytest.approx(0.6 * 155.2 + 1.5)
 
 
 def test_neue_order_wird_notiert_dann_gesendet(tmp_path, monkeypatch):

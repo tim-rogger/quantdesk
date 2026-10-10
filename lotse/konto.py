@@ -54,6 +54,7 @@ class Ausfuehrung:
     seite: str
     menge: float | None
     preis: float | None
+    gebuehr: float | None = None  # Kommission laut IBKR; None = (noch) nicht gemeldet
 
 
 def _kurs_oder_none(wert) -> float | None:
@@ -70,6 +71,15 @@ def auf_tick(limit: float, tick: float | None, seite: str) -> float:
     schritte = limit / tick
     schritte = math.floor(schritte + 1e-9) if seite == KAUF else math.ceil(schritte - 1e-9)
     return round(schritte * tick, 10)
+
+
+def _gebuehr(fill) -> float | None:
+    """Kommission einer Ausführung. ib_async legt die Gebührenmeldung mit 0 an, bevor IBKR sie schickt –
+    sie gilt nur, wenn sie zu dieser Ausführung gehört (gleiche execId)."""
+    bericht = getattr(fill, "commissionReport", None)
+    if bericht is None or getattr(bericht, "execId", "") != fill.execution.execId:
+        return None
+    return echte_zahl(bericht.commission)
 
 
 def _seite(action: str) -> str:
@@ -174,7 +184,7 @@ class Konto:
             ref = getattr(e, "orderRef", "") or ""
             if ref.startswith(REF_PREFIX):
                 out.append(Ausfuehrung(str(e.execId), ref, fill.contract.symbol, _seite(e.side),
-                                       echte_zahl(e.shares), echte_zahl(e.price)))
+                                       echte_zahl(e.shares), echte_zahl(e.price), _gebuehr(fill)))
         return out
 
     def tick(self, papier: str) -> float | None:

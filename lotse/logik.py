@@ -59,10 +59,10 @@ class Lage:
     cash                CHF auf dem Konto (None = nicht lesbar)
     stueck              Stück je Wertpapier laut Broker – auch Papiere, die Lotse nichts angehen
     eigene_stueck       Stück je Wertpapier, die Lotse selbst gekauft hat (Tagebuch, Regel 15)
-    investiert          CHF, die Lotse bisher netto eingesetzt hat: Käufe minus Verkäufe, Menge × Preis (Tagebuch)
+    investiert          CHF, die Lotse netto verbraucht hat: Käufe + Kommission − Verkaufserlöse nach Kommission
     kurse               Kurs je Wertpapier aus Ziel- und Abbau-Liste
     letzter_handelstag  der letzte abgeschlossene Handelstag der SIX (für "Kurs zu alt")
-    gesamt_letzter_lauf Depotwert beim letzten Lauf in CHF (None = erster Lauf)
+    mindestdepot_erreicht  im Tagebuch vermerkt: das Depot hat das Mindestdepot schon einmal erreicht (Regel 12)
     heute_betrag        heute schon bestellt, in CHF
     heute_orders        heute schon bestellt, Anzahl Orders
     """
@@ -71,7 +71,7 @@ class Lage:
     eigene_stueck: dict[str, float]
     kurse: dict[str, Kurs]
     letzter_handelstag: dt.date
-    gesamt_letzter_lauf: float | None = None
+    mindestdepot_erreicht: bool = False
     heute_betrag: float = 0.0
     heute_orders: int = 0
     investiert: float = 0.0
@@ -125,7 +125,7 @@ def regel_0_pruefe_lage(lage: Lage, einstellungen: Einstellungen) -> Abbruch | N
 def regel_5_werte(stueck: dict[str, float], kurse: dict[str, Kurs]) -> dict[str, float]:
     """Regel 5a: Wert jeder Position in CHF = Stück × Kurs.
 
-    Rein:   Stück je Papier und Kurse je Papier.
+    Rein:   Stück je Papier (die EIGENEN, aus dem Tagebuch – nicht die vom Konto) und Kurse je Papier.
     Raus:   Wert je Papier in CHF – nur für Papiere, für die es einen Kurs gibt.
     """
     werte = {}
@@ -136,9 +136,14 @@ def regel_5_werte(stueck: dict[str, float], kurse: dict[str, Kurs]) -> dict[str,
     return werte
 
 
-def regel_5_gesamt(werte: dict[str, float], cash: float) -> float:
-    """Regel 5b: Gesamtwert des Depots = Summe aller Werte + Cash, in CHF."""
-    return sum(werte.values()) + cash
+def regel_5_gesamt(werte: dict[str, float], cash: float, budget: float, investiert: float) -> float:
+    """Regel 5b: Gesamtwert des Lotse-Depots in CHF = Summe der eigenen Werte + Lotse-Geld.
+
+    Lotse-Geld = das Kleinere von Cash und (Budget − investiert), nie negativ. So zählt das Geld von Bot C
+    auf demselben Konto nicht mit.
+    """
+    lotse_geld = max(min(cash, budget - investiert), 0.0)
+    return sum(werte.values()) + lotse_geld
 
 
 def regel_6_abweichungen(werte: dict[str, float], gesamt: float, ziel: dict[str, float]) -> dict[str, float]:
@@ -221,24 +226,21 @@ def regel_11_umschichten(gesamt: float, abweichung: float, mindestdepot: float, 
     """Regel 11: Darf ein zu grosses Papier verkauft werden, um umzuschichten?
 
     Rein:   Gesamtwert (CHF), Abweichung dieses Papiers (Prozentpunkte, positiv = zu viel), Mindestdepot, Schwelle.
-    Raus:   True nur, wenn das Depot über dem Mindestdepot liegt UND die Abweichung grösser als die Schwelle ist.
+    Raus:   True nur, wenn das Depot das Mindestdepot erreicht hat (≥) UND die Abweichung grösser als die
+            Schwelle ist.
     """
-    return gesamt > mindestdepot and abweichung > schwelle
+    return gesamt >= mindestdepot and abweichung > schwelle
 
 
-def regel_12_erstmals_ueber_mindestdepot(gesamt: float, gesamt_letzter_lauf: float | None,
-                                         mindestdepot: float) -> bool:
-    """Regel 12: Ist das Depot gerade zum ersten Mal über das Mindestdepot gestiegen?
+def regel_12_erstmals_ueber_mindestdepot(gesamt: float, schon_erreicht: bool, mindestdepot: float) -> bool:
+    """Regel 12: Hat das Depot das Mindestdepot gerade zum ersten Mal erreicht?
 
-    Rein:   Gesamtwert jetzt, Gesamtwert beim letzten Lauf (None = erster Lauf), Mindestdepot.
-    Raus:   True, wenn es jetzt darüber liegt und beim letzten Lauf darunter lag.
+    Rein:   Gesamtwert jetzt, ob im Tagebuch schon vermerkt ist, dass es einmal erreicht wurde, Mindestdepot.
+    Raus:   True, wenn es jetzt erreicht ist (≥) und noch nie vermerkt wurde.
             Dann wird in diesem Lauf nicht umgeschichtet – Einzahlungen füllen den zweiten Teil auf.
+            Der Vermerk wird einmal gesetzt (lauf.py) und nie neu errechnet.
     """
-    if gesamt < mindestdepot:
-        return False
-    if gesamt_letzter_lauf is None:
-        return True  # erster Lauf schon über dem Mindestdepot: vorsichtshalber wie "erstmals"
-    return gesamt_letzter_lauf < mindestdepot
+    return gesamt >= mindestdepot and not schon_erreicht
 
 
 def regel_13_darf_kaufen(papier: str, abbau: tuple[str, ...]) -> bool:
@@ -315,8 +317,8 @@ def plane(lage: Lage, einstellungen: Einstellungen) -> Plan:
     if abbruch is not None:
         return Plan(abbruch=abbruch)
     g = einstellungen.grenzen
-    werte = regel_5_werte(lage.stueck, lage.kurse)
-    gesamt = regel_5_gesamt(werte, lage.cash)
+    werte = regel_5_werte(lage.eigene_stueck, lage.kurse)
+    gesamt = regel_5_gesamt(werte, lage.cash, g.budget_chf, lage.investiert)
     abweichungen = regel_6_abweichungen(werte, gesamt, _ziel_mit_abbau(einstellungen))
     verfuegbar = regel_7_verfuegbar(lage.cash, g.budget_chf, lage.investiert, g.gebuehr_pro_order, g.puffer_prozent)
 
@@ -356,7 +358,7 @@ def _verkaeufe(lage: Lage, einstellungen: Einstellungen, werte: dict[str, float]
     """Regel 11, 12, 14, 17: zu grosse Papiere verkaufen – höchstens die Abweichung, die eigenen Stück und
     max_pro_order."""
     g = einstellungen.grenzen
-    if regel_12_erstmals_ueber_mindestdepot(gesamt, lage.gesamt_letzter_lauf, g.mindestdepot):
+    if regel_12_erstmals_ueber_mindestdepot(gesamt, lage.mindestdepot_erreicht, g.mindestdepot):
         return []
     orders = []
     for papier, abweichung in abweichungen.items():
