@@ -33,11 +33,6 @@ CONFIG = os.path.join(os.path.dirname(__file__), "config.toml")
 MODI = ("VORSCHLAG", "PAPER", "ECHT")
 OFFEN = "TODO"
 BOERSE_KALENDER = "XSWX"  # SIX Swiss Exchange
-# Bis Tim entschieden hat, wie Lotse sein Geld vom Geld von Bot C trennt (beide auf DUO844164), sendet Lotse
-# keine Orders. Siehe PR "Funde", Punkt 1. Tim setzt das bewusst auf True, wenn die Frage geklärt ist.
-PAPER_FREIGEGEBEN = False
-PAPER_GESPERRT = "PAPER ist gesperrt: Lotse teilt das Paper-Konto mit Bot C (Cash und Positionen). Erst klären, " \
-                 "welches Geld Lotse gehört (PR, Funde Punkt 1), dann PAPER_FREIGEGEBEN in lauf.py auf True setzen."
 
 
 @dataclass
@@ -82,7 +77,7 @@ def einstellungen(cfg: dict) -> logik.Einstellungen:
     g, geb, aus = cfg["grenzen"], cfg["gebuehren"], cfg["ausfuehren"]
     ziel = {cfg["wertpapiere"][name]: float(prozent) for name, prozent in cfg["ziel"].items()}
     grenzen = logik.Grenzen(
-        mindestbetrag=float(g["mindestbetrag"]), schwelle=float(g["schwelle"]), mindestdepot=float(g["mindestdepot"]),
+        budget_chf=float(g["budget_chf"]), mindestbetrag=float(g["mindestbetrag"]), schwelle=float(g["schwelle"]), mindestdepot=float(g["mindestdepot"]),
         puffer_prozent=float(g["puffer_prozent"]), max_pro_order=float(g["max_pro_order"]),
         max_pro_tag=float(g["max_pro_tag"]), max_orders_pro_tag=int(g["max_orders_pro_tag"]),
         gebuehr_pro_order=float(geb["pro_order"]), limit_abstand_prozent=float(aus["limit_abstand_prozent"]),
@@ -132,8 +127,6 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
     modus = cfg["modus"]
     if modus == "ECHT":
         return _stopp(push, "Modus ECHT ist in dieser Stufe nicht erlaubt (nur Paper).")
-    if modus == "PAPER" and not PAPER_FREIGEGEBEN:
-        return _stopp(push, PAPER_GESPERRT)
     e = einstellungen(cfg)
     nummer = tagebuch.neuer_lauf(zieldatei, jetzt, modus)  # Regel 1
     try:
@@ -152,7 +145,7 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
         lage = logik.Lage(cash=konto.cash(), stueck=konto.positionen(), eigene_stueck=tagebuch.eigene_stueck(),
                           kurse=konto.kurse(papiere), letzter_handelstag=handelstag(jetzt.date()),
                           gesamt_letzter_lauf=tagebuch.gesamt_letzter_lauf(), heute_betrag=heute_betrag,
-                          heute_orders=heute_orders)
+                          heute_orders=heute_orders, investiert=tagebuch.investiert())
     except KontoFehler as fehler:
         return _ende(tagebuch, nummer, jetzt, _stopp(push, f"Broker: {fehler}"))
     if offene:

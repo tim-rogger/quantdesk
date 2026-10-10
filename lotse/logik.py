@@ -30,6 +30,7 @@ class Kurs:
 @dataclass(frozen=True)
 class Grenzen:
     """Die Zahlen aus [grenzen], [gebuehren] und [ausfuehren] in config.toml."""
+    budget_chf: float
     mindestbetrag: float
     schwelle: float
     mindestdepot: float
@@ -57,6 +58,7 @@ class Lage:
     cash                CHF auf dem Konto (None = nicht lesbar)
     stueck              Stück je Wertpapier laut Broker – auch Papiere, die Lotse nichts angehen
     eigene_stueck       Stück je Wertpapier, die Lotse selbst gekauft hat (Tagebuch, Regel 15)
+    investiert          CHF, die Lotse bisher netto eingesetzt hat: Käufe minus Verkäufe, Menge × Preis (Tagebuch)
     kurse               Kurs je Wertpapier aus Ziel- und Abbau-Liste
     letzter_handelstag  der letzte abgeschlossene Handelstag der SIX (für "Kurs zu alt")
     gesamt_letzter_lauf Depotwert beim letzten Lauf in CHF (None = erster Lauf)
@@ -71,6 +73,7 @@ class Lage:
     gesamt_letzter_lauf: float | None = None
     heute_betrag: float = 0.0
     heute_orders: int = 0
+    investiert: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -133,11 +136,15 @@ def regel_6_abweichungen(werte: dict[str, float], gesamt: float, ziel: dict[str,
     raise NotImplementedError("Regel 6 — Tim")
 
 
-def regel_7_verfuegbar(cash: float, gebuehr: float, puffer_prozent: float) -> float:
+def regel_7_verfuegbar(cash: float, budget: float, investiert: float, gebuehr: float,
+                       puffer_prozent: float) -> float:
     """Regel 7: Wie viel CHF darf Lotse ausgeben?
 
-    Rein:   Cash (CHF), geschätzte Gebühr einer Order (CHF), Puffer in Prozent vom Cash.
-    Raus:   Cash minus Gebühr minus Puffer. Nie negativ.
+    Rein:   Cash (CHF), Budget (CHF), bisher investiert (CHF), geschätzte Gebühr einer Order (CHF),
+            Puffer in Prozent.
+    Raus:   Grundbetrag = das Kleinere von Cash und (Budget − investiert).
+            Verfügbar = Grundbetrag minus Gebühr minus Puffer (Prozent vom Grundbetrag). Nie negativ.
+    Das Budget trennt Lotse vom Geld von Bot C auf demselben Paper-Konto.
     """
     raise NotImplementedError("Regel 7 — Tim")
 
@@ -153,13 +160,15 @@ def regel_8_unterdecktestes(abweichungen: dict[str, float], kaufbar: list[str]) 
     raise NotImplementedError("Regel 8 — Tim")
 
 
-def regel_9_kaufbetrag(verfuegbar: float, luecke: float, mindestbetrag: float) -> float:
+def regel_9_kaufbetrag(verfuegbar: float, luecke: float, mindestbetrag: float, max_pro_order: float) -> float:
     """Regel 9: Für wie viel CHF wird gekauft?
 
-    Rein:   verfügbares Geld (Regel 7), Lücke des Papiers in CHF (wie viel bis zum Ziel fehlt), Mindestbetrag.
+    Rein:   verfügbares Geld (Regel 7), Lücke des Papiers in CHF (wie viel bis zum Ziel fehlt), Mindestbetrag,
+            Höchstbetrag pro Order.
     Raus:   Betrag in CHF; 0 heisst: nicht kaufen.
-    Keine Order unter dem Mindestbetrag. Ist die Lücke kleiner als der Mindestbetrag, wird trotzdem gekauft –
-    dann aber das ganze verfügbare Geld.
+    Ist die Lücke kleiner als der Mindestbetrag, wird das ganze verfügbare Geld genommen, sonst die Lücke.
+    Der Betrag ist nie grösser als das verfügbare Geld und wird auf max_pro_order gekappt.
+    Liegt der Orderbetrag unter dem Mindestbetrag, wird nicht gekauft.
     """
     raise NotImplementedError("Regel 9 — Tim")
 
@@ -219,7 +228,7 @@ def regel_17_darf_anfassen(papier: str, ziel: dict[str, float], abbau: tuple[str
 
 
 def regel_18_grenzen(order: Order, heute_betrag: float, heute_orders: int, grenzen: Grenzen) -> Abbruch | None:
-    """Regel 18: Hält diese Order die Tagesgrenzen ein?
+    """Regel 18: Hält diese Order die Tagesgrenzen ein? (Nur noch Nachprüfung – Regel 9 kappt schon vorher.)
 
     Rein:   die geplante Order, heute schon bestellter Betrag (CHF) und Anzahl Orders, die Grenzen.
     Raus:   None, wenn alles passt. Abbruch mit Grund, wenn die Order über max_pro_order liegt, der Tag damit

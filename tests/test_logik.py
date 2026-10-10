@@ -41,21 +41,25 @@ from lotse.logik import (
 
 HANDELSTAG = dt.date(2026, 10, 9)
 ZIEL = {"AKTIEN": 85.0, "ANLEIHEN": 15.0}
-GRENZEN = Grenzen(mindestbetrag=100, schwelle=5, mindestdepot=2000, puffer_prozent=1, max_pro_order=500,
+GRENZEN = Grenzen(budget_chf=10_000, mindestbetrag=100, schwelle=5, mindestdepot=2000, puffer_prozent=1, max_pro_order=500,
                   max_pro_tag=1000, max_orders_pro_tag=3, gebuehr_pro_order=3, limit_abstand_prozent=0.5,
                   bruchstueck_stellen=4)
 EINSTELLUNGEN = Einstellungen(ziel=ZIEL, abbau=(), grenzen=GRENZEN)
+BUDGET_300 = Einstellungen(ziel=ZIEL, abbau=(), grenzen=replace(GRENZEN, budget_chf=300))
 
 
 def frisch(wert=100.0):
     return Kurs(wert, HANDELSTAG)
 
 
-def lage(cash, stueck=None, eigene=None, kurse=None, gesamt_letzter_lauf=None, heute_betrag=0.0, heute_orders=0):
+def lage(cash, stueck=None, eigene=None, kurse=None, gesamt_letzter_lauf=None, heute_betrag=0.0, heute_orders=0,
+         investiert=None):
+    """investiert: ohne Angabe = Wert der Positionen zu 100 CHF (so viel hat Lotse dafür bezahlt)."""
     stueck = stueck or {}
     return Lage(cash=cash, stueck=stueck, eigene_stueck=dict(stueck) if eigene is None else eigene,
                 kurse=kurse or {"AKTIEN": frisch(), "ANLEIHEN": frisch()}, letzter_handelstag=HANDELSTAG,
-                gesamt_letzter_lauf=gesamt_letzter_lauf, heute_betrag=heute_betrag, heute_orders=heute_orders)
+                gesamt_letzter_lauf=gesamt_letzter_lauf, heute_betrag=heute_betrag, heute_orders=heute_orders,
+                investiert=sum(stueck.values()) * 100.0 if investiert is None else investiert)
 
 
 def kaeufe(plan, papier=None):
@@ -110,11 +114,26 @@ def test_regel_6_abweichung_in_prozentpunkten():
 
 
 def test_regel_7_verfuegbar_ist_cash_minus_gebuehr_minus_puffer():
-    assert regel_7_verfuegbar(200.0, 3.0, 1.0) == pytest.approx(195.0)  # 200 − 3 − 1 % von 200
+    # Budget reicht: Grundbetrag = Cash 200 → 200 − 3 − 1 % von 200
+    assert regel_7_verfuegbar(200.0, budget=10_000.0, investiert=0.0, gebuehr=3.0,
+                              puffer_prozent=1.0) == pytest.approx(195.0)
+
+
+def test_regel_7_budget_begrenzt_bei_geteiltem_konto():
+    # Konto hat 1 Mio. CHF (auch Geld von Bot C), Budget 300: Grundbetrag 300 → 300 − 3 − 3
+    assert regel_7_verfuegbar(1_000_000.0, budget=300.0, investiert=0.0, gebuehr=3.0,
+                              puffer_prozent=1.0) == pytest.approx(294.0)
+
+
+def test_regel_7_restbudget_nach_bisherigen_kaeufen():
+    # schon 250 investiert: Grundbetrag 50 → 50 − 3 − 0.50
+    assert regel_7_verfuegbar(1_000_000.0, budget=300.0, investiert=250.0, gebuehr=3.0,
+                              puffer_prozent=1.0) == pytest.approx(46.5)
 
 
 def test_regel_7_nie_negativ():
-    assert regel_7_verfuegbar(2.0, 3.0, 1.0) == 0.0
+    assert regel_7_verfuegbar(2.0, budget=300.0, investiert=0.0, gebuehr=3.0, puffer_prozent=1.0) == 0.0
+    assert regel_7_verfuegbar(500.0, budget=300.0, investiert=350.0, gebuehr=3.0, puffer_prozent=1.0) == 0.0
 
 
 # =========================================================================== Block 3 – Entscheiden
@@ -131,15 +150,29 @@ def test_regel_8_keine_unterdeckung_kein_papier():
 
 
 def test_regel_9_luecke_groesser_als_mindestbetrag_kauf_der_luecke():
-    assert regel_9_kaufbetrag(verfuegbar=300.0, luecke=200.0, mindestbetrag=100.0) == pytest.approx(200.0)
+    assert regel_9_kaufbetrag(verfuegbar=300.0, luecke=200.0, mindestbetrag=100.0,
+                              max_pro_order=500.0) == pytest.approx(200.0)
 
 
 def test_regel_9_luecke_kleiner_als_mindestbetrag_ganzes_geld():
-    assert regel_9_kaufbetrag(verfuegbar=145.5, luecke=80.0, mindestbetrag=100.0) == pytest.approx(145.5)
+    assert regel_9_kaufbetrag(verfuegbar=145.5, luecke=80.0, mindestbetrag=100.0,
+                              max_pro_order=500.0) == pytest.approx(145.5)
 
 
 def test_regel_9_zu_wenig_geld_kein_kauf():
-    assert regel_9_kaufbetrag(verfuegbar=40.0, luecke=300.0, mindestbetrag=100.0) == 0.0
+    assert regel_9_kaufbetrag(verfuegbar=40.0, luecke=300.0, mindestbetrag=100.0, max_pro_order=500.0) == 0.0
+
+
+def test_regel_9_mindestbetrag_gilt_fuer_den_orderbetrag():
+    # 96 CHF verfügbar, Lücke 85: das ganze Geld wäre 96 – unter 100 → kein Kauf
+    assert regel_9_kaufbetrag(verfuegbar=96.0, luecke=85.0, mindestbetrag=100.0, max_pro_order=500.0) == 0.0
+
+
+def test_regel_9_kappt_auf_max_pro_order():
+    assert regel_9_kaufbetrag(verfuegbar=800.0, luecke=700.0, mindestbetrag=100.0,
+                              max_pro_order=500.0) == pytest.approx(500.0)
+    assert regel_9_kaufbetrag(verfuegbar=800.0, luecke=80.0, mindestbetrag=100.0,
+                              max_pro_order=500.0) == pytest.approx(500.0)
 
 
 def test_regel_10_unter_mindestdepot_nur_wertpapier_1():
@@ -229,12 +262,18 @@ def test_regel_20_nur_ganze_stueck():
 
 
 # =========================================================================== Fälle aus dem Auftrag (plane)
-def test_fall_leeres_depot_100_chf_ein_kauf_wertpapier_1_knapp_unter_100():
+def test_fall_leeres_depot_100_chf_keine_order():
+    # verfügbar 100 − 3 − 1 = 96: Orderbetrag unter dem Mindestbetrag von 100 → nichts
     plan = plane(lage(100.0), EINSTELLUNGEN)
+    assert plan.abbruch is None and plan.orders == []
+
+
+def test_fall_leeres_depot_130_chf_ein_kauf_wertpapier_1_ueber_125():
+    plan = plane(lage(130.0), EINSTELLUNGEN)
     assert plan.abbruch is None and len(plan.orders) == 1
     order = plan.orders[0]
     assert (order.papier, order.seite) == ("AKTIEN", KAUF)
-    assert 90.0 < order.betrag < 100.0  # Gebühr (3) und Puffer (1 %) gehen ab
+    assert order.betrag == pytest.approx(125.7)  # 130 − 3 Gebühr − 1.30 Puffer
 
 
 def test_fall_leeres_depot_99_chf_nichts():
@@ -250,7 +289,7 @@ def test_fall_150_chf_luecke_nur_80_kauf_ueber_ganzes_verfuegbares_geld():
 
 
 def test_fall_depot_1999_nur_wertpapier_1():
-    plan = plane(lage(100.0, stueck={"AKTIEN": 18.99}), EINSTELLUNGEN)  # 1899 + 100 Cash = 1999
+    plan = plane(lage(200.0, stueck={"AKTIEN": 17.99}), EINSTELLUNGEN)  # 1799 + 200 Cash = 1999
     assert plan.abbruch is None
     assert kaeufe(plan) and all(o.papier == "AKTIEN" for o in plan.orders)
 
@@ -266,11 +305,13 @@ def test_fall_abweichung_4_prozentpunkte_depot_5000_nichts():
 
 
 def test_fall_abweichung_7_prozentpunkte_depot_5000_umschichtung():
-    plan = plane(lage(0.0, stueck={"AKTIEN": 46.0, "ANLEIHEN": 4.0}, gesamt_letzter_lauf=5000.0), EINSTELLUNGEN)
+    # AKTIEN 4600 (92 % = +7), ANLEIHEN 200, Cash 200 → Gesamt 5000. Der Kauf geht aus dem Cash, nicht aus dem Erlös.
+    plan = plane(lage(200.0, stueck={"AKTIEN": 46.0, "ANLEIHEN": 2.0}, gesamt_letzter_lauf=5000.0), EINSTELLUNGEN)
     assert plan.abbruch is None
     verkauf = verkaeufe(plan, "AKTIEN")
     assert len(verkauf) == 1 and 0 < verkauf[0].betrag <= 350.0  # höchstens 7 % von 5000
-    # Ob mit dem Erlös im selben Lauf ANLEIHEN gekauft werden, ist offen (Cash ist 0, Regel 7/16) – Tim entscheidet.
+    kauf = kaeufe(plan, "ANLEIHEN")
+    assert len(kauf) == 1 and 100.0 <= kauf[0].betrag <= 195.0  # höchstens 200 − 3 − 2
 
 
 def test_fall_kurs_fehlt_abbruch_mit_grund():
@@ -308,6 +349,23 @@ def test_fall_vierte_order_am_selben_tag_abbruch():
     plan = plane(lage(600.0, stueck={"AKTIEN": 30.0}, gesamt_letzter_lauf=3500.0, heute_betrag=300.0,
                       heute_orders=3), EINSTELLUNGEN)
     assert plan.abbruch is not None and plan.orders == []
+
+
+def test_fall_viel_cash_order_wird_gekappt_kein_abbruch():
+    plan = plane(lage(1500.0), EINSTELLUNGEN)  # unter Mindestdepot, Lücke 1275: Regel 9 kappt auf 500
+    assert plan.abbruch is None and plan.orders
+    assert plan.orders[0].betrag == pytest.approx(500.0) and all(o.betrag <= 500.0 for o in plan.orders)
+
+
+def test_fall_geteiltes_konto_budget_300_begrenzt():
+    plan = plane(lage(1_000_000.0), BUDGET_300)  # Konto-Cash gehört grösstenteils Bot C
+    assert plan.abbruch is None and len(plan.orders) == 1
+    assert plan.orders[0].betrag == pytest.approx(294.0)  # 300 − 3 − 3
+
+
+def test_fall_budget_aufgebraucht_nichts():
+    plan = plane(lage(1_000_000.0, stueck={"AKTIEN": 2.5}, investiert=250.0), BUDGET_300)  # Rest 46.50 < 100
+    assert plan.abbruch is None and plan.orders == []
 
 
 def test_fall_cash_genau_max_pro_order_plus_gebuehr_order_hoechstens_max_pro_order():

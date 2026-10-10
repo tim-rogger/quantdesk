@@ -89,6 +89,16 @@ def test_unset_double_als_filled_quantity_erhoeht_den_zaehler_nicht(tmp_path):
     assert tb.eigene_stueck() == {}
 
 
+def test_investiert_ist_netto_eingesetztes_geld(tmp_path):
+    tb = Tagebuch(str(tmp_path))
+    k = tb.notiere(1, 1, "VWRL", "KAUF", 300.0, 2.0, 156.0, JETZT)
+    tb.buche_ausfuehrung(k, "E1", "VWRL", "KAUF", 1.5, 150.0, JETZT)  # 225 CHF
+    v = tb.notiere(2, 1, "VWRL", "VERKAUF", 100.0, 0.5, 150.0, JETZT)
+    tb.buche_ausfuehrung(v, "E2", "VWRL", "VERKAUF", 0.5, 160.0, JETZT)  # −80 CHF
+    assert tb.investiert() == pytest.approx(145.0)
+    assert Tagebuch(str(tmp_path / "leer")).investiert() == 0.0
+
+
 def test_ausfuehrung_doppelt_fremd_oder_zu_viel_verkauft_wird_nicht_gebucht(tmp_path):
     tb = Tagebuch(str(tmp_path))
     ref = tb.notiere(1, 1, "VWRL", "KAUF", 300.0, 2.0, 156.0, JETZT)
@@ -105,7 +115,6 @@ def test_ausfuehrung_doppelt_fremd_oder_zu_viel_verkauft_wird_nicht_gebucht(tmp_
 # ---------------------------------------------------------------- Regel 19: nach Absturz nichts doppelt
 def paper_lauf(tmp_path, monkeypatch, ib, plan):
     """Einen PAPER-Lauf mit fester Order-Liste (statt Tims Logik) und festem Stück/Limit ausführen."""
-    monkeypatch.setattr(lauf, "PAPER_FREIGEGEBEN", True)
     monkeypatch.setattr(logik, "plane", lambda lage, e: plan)
     monkeypatch.setattr(logik, "regel_20_stueck_und_limit", lambda order, kurs, abstand, stellen: (0.5, 156.0))
     cfg, text = lauf.lies_config()

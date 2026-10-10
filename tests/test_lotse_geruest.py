@@ -43,6 +43,7 @@ def test_einstellungen_aus_config_mit_boersenkuerzeln_in_reihenfolge():
     e = lauf.einstellungen(cfg)
     assert list(e.ziel) == ["VWRL", "CHCORP"] and e.ziel["VWRL"] == 85.0  # VWRL = Wertpapier 1
     assert e.abbau == ("ALT",) and e.grenzen.max_orders_pro_tag == 3 and e.grenzen.gebuehr_pro_order == 3.0
+    assert e.grenzen.budget_chf == 300.0
 
 
 def test_config_fehler_werden_benannt():
@@ -159,11 +160,15 @@ def lauf_mit(tmp_path, modus="VORSCHLAG", ib=None, wertpapiere=None):
     return ergebnis, push, ib
 
 
-def test_echt_und_paper_sind_gesperrt(tmp_path):
+def test_echt_ist_gesperrt(tmp_path):
     ergebnis, push, ib = lauf_mit(tmp_path, "ECHT")
     assert not ergebnis.ok and "ECHT" in ergebnis.text and ib.gesendet == []
-    ergebnis, push, ib = lauf_mit(tmp_path, "PAPER")
-    assert not ergebnis.ok and "Bot C" in ergebnis.text and push.gesendet[0]["title"] == "Lotse – keine Order"
+    assert push.gesendet[0]["title"] == "Lotse – keine Order"
+
+
+def test_paper_laeuft_bis_zur_logik(tmp_path):
+    ergebnis, push, ib = lauf_mit(tmp_path, "PAPER")  # Budget trennt Lotse von Bot C – PAPER ist offen
+    assert not ergebnis.ok and "Logik noch nicht fertig" in ergebnis.text and ib.gesendet == []
 
 
 def test_offene_wertpapiere_stoppen_den_lauf(tmp_path):
@@ -209,4 +214,4 @@ def test_lage_enthaelt_was_die_logik_braucht(tmp_path, monkeypatch):
     lage = gesehen["lage"]
     assert lage.cash == 1234.0 and lage.stueck == {"VWRL": 2.0, "AAPL": 5} and lage.eigene_stueck == {}
     assert set(lage.kurse) == {"VWRL", "CHCORP"} and lage.letzter_handelstag == dt.date(2026, 10, 8)
-    assert (lage.heute_betrag, lage.heute_orders) == (0.0, 0)
+    assert (lage.heute_betrag, lage.heute_orders, lage.investiert) == (0.0, 0, 0.0)

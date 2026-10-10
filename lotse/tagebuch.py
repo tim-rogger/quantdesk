@@ -155,6 +155,15 @@ class Tagebuch:
                                             "zeit": jetzt.isoformat()})
         return True
 
+    def investiert(self) -> float:
+        """CHF, die Lotse netto eingesetzt hat: gekaufte minus verkaufte Ausführungen, jeweils Menge × Preis
+        (ohne Gebühren). Für das Budget in Regel 7."""
+        summe = 0.0
+        for e in self._lies(self._ausfuehrungen):
+            vorzeichen = 1 if e["seite"] == "KAUF" else -1
+            summe += vorzeichen * e["menge"] * e["preis"]
+        return summe
+
     def eigene_stueck(self) -> dict[str, float]:
         """Stück je Papier, die Lotse selbst gekauft (minus verkauft) hat – nur aus gebuchten Ausführungen."""
         out: dict[str, float] = {}

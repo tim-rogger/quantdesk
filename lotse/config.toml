@@ -14,10 +14,11 @@ aktien   = 85
 anleihen = 15
 
 [grenzen]
-mindestbetrag       = 100     # CHF, keine Order darunter
+budget_chf          = 300     # CHF, so viel darf Lotse insgesamt einsetzen (Regel 7) – trennt Lotse vom Geld von Bot C
+mindestbetrag       = 100     # CHF, keine Order mit kleinerem Orderbetrag
 schwelle            = 5       # Prozentpunkte, ab wann umgeschichtet wird
 mindestdepot        = 2000    # CHF, darunter nur Wertpapier 1
-puffer_prozent      = 1       # Prozent vom Cash, bleibt zusätzlich zur Gebühr liegen
+puffer_prozent      = 1       # Prozent vom Grundbetrag min(Cash, Budget − investiert), bleibt zusätzlich zur Gebühr liegen
 max_pro_order       = 500     # CHF
 max_pro_tag         = 1000    # CHF
 max_orders_pro_tag  = 3
