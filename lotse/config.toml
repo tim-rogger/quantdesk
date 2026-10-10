@@ -3,10 +3,10 @@
 modus = "VORSCHLAG"              # VORSCHLAG | PAPER | ECHT
 
 [wertpapiere]
-# PLATZHALTER – die endgültige Wahl ist offen (Vorschläge: lotse/WERTPAPIERE.md).
+# Gewählt am 10.10.2026 (Begründung + Alternativen: lotse/WERTPAPIERE.md).
 # Die Reihenfolge zählt: das erste Wertpapier ist "Wertpapier 1" (Regel 10).
-aktien    = "TODO"
-anleihen  = "TODO"
+aktien    = "SSAC"
+anleihen  = "CSBGC7"
 
 [ziel]
 # Prozent je Wertpapier, gleiche Namen wie oben. Summe = 100.
