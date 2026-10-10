@@ -3,6 +3,11 @@
 const $ = (id) => document.getElementById(id);
 const money = (v) => v == null ? "–" : Math.round(v).toLocaleString("de-CH") + " $";
 const pct = (v, sign = true) => v == null ? "–" : (sign && v > 0 ? "+" : "") + (v * 100).toFixed(1) + " %";
+// Zeitpunkte immer MIT Zeitzone. ts = Unix-Sekunden; angezeigt in der Zeitzone des Handys, z.B. "Fr., 16:00 MESZ".
+const zeit = (ts, opts = { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) =>
+  new Date(ts * 1000).toLocaleString("de-CH", { ...opts, timeZoneName: "short" });
+// Der Bot plant in New-York-Zeit – zum Vergleichen mit dem Zeitplan (10:00 / 15:30) zusätzlich diese Uhrzeit
+const nyZeit = (ts) => new Date(ts * 1000).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" }) + " New York";
 const COLORS = { "C live (Paper)": "#3fb950", "SPY halten": "#58a6ff", "C Backtest (gleicher Zeitraum)": "#8b949e" };
 
 function el(tag, attrs = {}, text = "") {
@@ -69,7 +74,7 @@ function render(data) {
   mode.textContent = data.mode; mode.className = "badge " + (data.mode === "PAPER" ? "paper" : "dry");
   $("subtitle").textContent = `${data.strategy || "Kandidat C"} · ${data.account_id || "offline"} · ${data.broker}`;
   $("stop-banner").hidden = !data.stop_active;
-  $("generated").textContent = data.generated_at ? new Date(data.generated_at * 1000).toLocaleString("de-CH") : "–";
+  $("generated").textContent = data.generated_at ? zeit(data.generated_at) : "–";
 
   const acc = data.c_account || {};
   $("c-value").textContent = money(acc.value);
@@ -86,8 +91,8 @@ function render(data) {
 
   const runs = (data.runs || []).slice().reverse();
   const last = runs[0];
-  $("last-run").textContent = last ? new Date(last.ts * 1000).toLocaleString("de-CH", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "–";
-  $("last-run-sub").textContent = last ? `${last.mode} · ${last.ok ? "ok" : "Fehler"} · ${last.fills} Fills` : "";
+  $("last-run").textContent = last ? zeit(last.ts, { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "–";
+  $("last-run-sub").textContent = last ? `${nyZeit(last.ts)} · ${last.mode} · ${last.ok ? "ok" : "Fehler"} · ${last.fills} Fills` : "";
   const errs = last && last.errors && last.errors.length ? last.errors : [];
   $("error-banner").hidden = !errs.length;
   $("error-banner").textContent = errs.length ? `Letzter Lauf: ${errs[0]}${errs.length > 1 ? ` (+${errs.length - 1})` : ""}` : "";
@@ -138,7 +143,7 @@ function render(data) {
     const li = el("li");
     const cls = e.level === "error" ? "bad" : e.level === "warn" ? "muted" : "ok";
     li.appendChild(el("span", { class: cls }, e.level === "error" ? "●" : e.level === "warn" ? "▲" : "●"));
-    li.appendChild(el("span", {}, `${new Date(e.ts * 1000).toLocaleString("de-CH", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} · ${e.message}`));
+    li.appendChild(el("span", {}, `${zeit(e.ts, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} · ${e.message}`));
     ev.appendChild(li);
   });
 
@@ -146,7 +151,7 @@ function render(data) {
   runs.slice(0, 10).forEach((r) => {
     const li = el("li");
     li.appendChild(el("span", { class: r.ok ? "ok" : "bad" }, r.ok ? "●" : "●"));
-    li.appendChild(el("span", {}, `${new Date(r.ts * 1000).toLocaleString("de-CH")} · ${r.mode} · ${r.fills} Fills, ${r.orders} Orders` +
+    li.appendChild(el("span", {}, `${zeit(r.ts)} · ${r.mode} · ${r.fills} Fills, ${r.orders} Orders` +
       (r.errors && r.errors.length ? ` · ${r.errors[0]}` : "")));
     ul.appendChild(li);
   });

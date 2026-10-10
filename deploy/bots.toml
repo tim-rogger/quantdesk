@@ -1,0 +1,37 @@
+# Bot-Register für die Systemseite (/system im Dashboard).
+# Ein neuer Bot = ein neuer [[bot]]-Eintrag hier. Keine Codeänderung nötig.
+# Gelesen wird nur – der Sammler schreibt nie in die Dateien eines Bots.
+#
+# Pfade sind relativ zu deploy/state/ auf dem Server.
+#
+# Was ein Bot dafür bereitstellen muss:
+#   status_datei  JSON-Objekt mit dem aktuellen Stand. Daraus liest der Sammler:
+#                   modus_feld       Text, z.B. "PAPER"                         (Standard: mode)
+#                   investiert_feld  Zahl                                       (Standard: c_account.invested)
+#                   positionen_feld  Liste/Objekt (gezählt) oder Zahl            (Standard: c_account.positions)
+#                 Ein Punkt im Namen geht eine Ebene tiefer: "c_account.invested".
+#   laeufe_datei  JSONL, eine Zeile pro Lauf, die neueste unten. Felder:
+#                   lauf_zeit_feld   Unix-Sekunden ODER ISO-Zeit MIT Zeitzone    (Standard: ts)
+#                   lauf_ok_feld     true/false                                 (Standard: ok)
+#                   lauf_fehler_feld Liste von Texten                           (Standard: errors)
+#   laeufe        geplante Uhrzeiten (Mo–Fr) in `zeitzone`. Börsenfeiertage kennt der Sammler nicht.
+#   eingerichtet  false = grauer Kasten "noch nicht eingerichtet" (kein Fehler).
+
+[[bot]]
+id = "c"
+name = "Strategie C"
+strategie = "Grid 5 × 2 %, SMA200 + Ausstieg"
+eingerichtet = true
+status_datei = "data/status.json"
+laeufe_datei = "data/runs.jsonl"
+waehrung = "USD"
+zeitzone = "America/New_York"
+laeufe = ["10:00", "15:30"]
+
+[[bot]]
+id = "lotse"
+name = "Lotse"
+strategie = "Umschichten nach Zielgewichten (SIX-ETFs)"
+eingerichtet = false
+waehrung = "CHF"
+zeitzone = "Europe/Zurich"

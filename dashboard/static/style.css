@@ -54,3 +54,5 @@ input { flex: 1; min-width: 0; background: var(--bg); color: var(--text); border
 button.danger { background: var(--red); color: #fff; border: 0; border-radius: 8px; padding: 10px 16px;
   font-weight: 700; font-size: 15px; }
 .footer { text-align: center; margin-top: 18px; }
+.nav { display: flex; align-items: center; gap: 12px; }
+.nav a { color: var(--blue); text-decoration: none; font-size: 14px; }
