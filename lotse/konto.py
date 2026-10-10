@@ -58,6 +58,20 @@ class Ausfuehrung:
     menge: float | None
     preis: float | None
     gebuehr: float | None = None  # Kommission laut IBKR; None = (noch) nicht gemeldet
+    zeit: dt.datetime | None = None  # wann IBKR ausgeführt hat
+
+
+DIVIDENDEN_ARTEN = ("Dividends", "Payment In Lieu Of Dividends", "Withholding Tax")
+
+
+@dataclass(frozen=True)
+class Gutschrift:
+    """Eine Ausschüttung oder die Quellensteuer darauf (negativ), aus der IBKR Flex-Abfrage."""
+    id: str
+    papier: str
+    betrag: float | None
+    datum: dt.date | None
+    art: str
 
 
 def _als_datum(wert) -> dt.date | None:
@@ -102,7 +116,7 @@ def _seite(action: str) -> str:
 
 class Konto:
     def __init__(self, host: str, port: int, client_id: int, konto: str, boerse: str, waehrung: str,
-                 ib=None, wartezeit: float = 3.0):
+                 ib=None, wartezeit: float = 3.0, flex=None):
         if not konto.upper().startswith(PAPER_PREFIX):
             raise KontoFehler(f"Konto {konto!r} abgelehnt: Lotse läuft nur auf Paper-Konten ({PAPER_PREFIX}…).")
         self.host, self.port, self.client_id = host, port, client_id
@@ -113,6 +127,7 @@ class Konto:
 
             ib = IB()
         self.ib = ib
+        self._flex = flex  # Test-Double für ib_async.FlexReport
         self._vertraege: dict[str, object] = {}
         self.kursquellen: dict[str, str] = {}  # Papier -> woher der Kurs dieses Laufs stammt (für den Push)
 
@@ -236,8 +251,31 @@ class Konto:
             e = fill.execution
             ref = getattr(e, "orderRef", "") or ""
             if ref.startswith(REF_PREFIX):
+                zeit = getattr(e, "time", None) or getattr(fill, "time", None)
                 out.append(Ausfuehrung(str(e.execId), ref, fill.contract.symbol, _seite(e.side),
-                                       echte_zahl(e.shares), echte_zahl(e.price), _gebuehr(fill)))
+                                       echte_zahl(e.shares), echte_zahl(e.price), _gebuehr(fill),
+                                       zeit if isinstance(zeit, dt.datetime) else None))
+        return out
+
+    def dividenden(self, token: str, query_id: str) -> list[Gutschrift]:
+        """Ausschüttungen und Quellensteuern in der Kontowährung aus der IBKR Flex-Abfrage (Cash Transactions).
+        Die TWS-API kennt keine Liste der Gutschriften – deshalb Flex. Fehler -> KontoFehler."""
+        if self._flex is None:
+            from ib_async import FlexReport
+
+            self._flex = FlexReport
+        try:
+            bericht = self._flex(token, query_id)
+            zeilen = bericht.extract("CashTransaction")
+        except Exception as fehler:  # noqa: BLE001 – Flex: Netzwerk, Token, Format; nie den Lauf abbrechen lassen
+            raise KontoFehler(f"Flex-Abfrage fehlgeschlagen: {fehler}") from fehler
+        out = []
+        for z in zeilen:
+            if getattr(z, "type", "") not in DIVIDENDEN_ARTEN or getattr(z, "currency", "") != self.waehrung:
+                continue
+            datum = _als_datum(str(getattr(z, "dateTime", "") or getattr(z, "reportDate", "")))
+            out.append(Gutschrift(str(getattr(z, "transactionID", "")), str(getattr(z, "symbol", "")),
+                                  echte_zahl(getattr(z, "amount", None)), datum, z.type))
         return out
 
     def tick(self, papier: str) -> float | None:

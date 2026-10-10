@@ -14,7 +14,9 @@ aktien   = 85
 anleihen = 15
 
 [grenzen]
-budget_chf          = 300     # CHF, so viel darf Lotse insgesamt einsetzen (Regel 7) – trennt Lotse vom Geld von Bot C
+budget_chf          = 300     # CHF, so viel darf Lotse insgesamt einsetzen (Regel 7) – trennt Lotse vom Geld von Bot C.
+                              # 0 = kein Budget: Lotse rechnet mit dem ganzen CHF-Cash (später, wenn Lotse allein auf dem Konto ist)
+max_einzahlung_pro_lauf = 3000  # CHF, nur bei budget_chf = 0: grössere Einzahlung seit dem letzten Lauf -> Regel 0, bestätigen
 mindestbetrag       = 100     # CHF, keine Order mit kleinerem Orderbetrag
 schwelle            = 5       # Prozentpunkte, ab wann umgeschichtet wird
 mindestdepot        = 2000    # CHF, darunter nur Wertpapier 1
@@ -26,6 +28,11 @@ max_orders_pro_tag  = 3
 [abbau]
 # Wertpapiere hier werden nur noch verkauft, nie gekauft (Regel 13)
 liste = []
+
+[dividenden]
+# Ausschüttungen eigener Papiere senken "investiert". Quelle: IBKR Flex-Abfrage (Cash Transactions).
+# Query-ID hier, den Flex-Token NIE hier, sondern in deploy/.env als LOTSE_FLEX_TOKEN. Leer = nicht erfassen.
+flex_query_id = ""
 
 [gebuehren]
 # Schätzung für Regel 7. IBKR-Gebühr für SIX-Orders vor dem ersten PAPER-Lauf in der Gebührentabelle prüfen.

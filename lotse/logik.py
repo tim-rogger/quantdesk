@@ -32,6 +32,7 @@ class Kurs:
 class Grenzen:
     """Die Zahlen aus [grenzen], [gebuehren] und [ausfuehren] in config.toml."""
     budget_chf: float
+    max_einzahlung_pro_lauf: float
     mindestbetrag: float
     schwelle: float
     mindestdepot: float
@@ -63,6 +64,9 @@ class Lage:
     kurse               Kurs je Wertpapier aus Ziel- und Abbau-Liste
     letzter_handelstag  der letzte abgeschlossene Handelstag der SIX (für "Kurs zu alt")
     mindestdepot_erreicht  im Tagebuch vermerkt: das Depot hat das Mindestdepot schon einmal erreicht (Regel 12)
+    cash_letzter_lauf   Cash beim letzten erfolgreichen Lauf (None = noch keiner) – für die Einzahlungsprüfung
+    investiert_letzter_lauf  "investiert" beim letzten erfolgreichen Lauf
+    einzahlung_bestaetigt  Tim hat eine grosse Einzahlung für diesen Lauf bestätigt
     heute_betrag        heute schon bestellt, in CHF
     heute_orders        heute schon bestellt, Anzahl Orders
     """
@@ -72,6 +76,9 @@ class Lage:
     kurse: dict[str, Kurs]
     letzter_handelstag: dt.date
     mindestdepot_erreicht: bool = False
+    cash_letzter_lauf: float | None = None
+    investiert_letzter_lauf: float = 0.0
+    einzahlung_bestaetigt: bool = False
     heute_betrag: float = 0.0
     heute_orders: int = 0
     investiert: float = 0.0
@@ -118,6 +125,25 @@ def regel_0_pruefe_lage(lage: Lage, einstellungen: Einstellungen) -> Abbruch | N
             return Abbruch(f"Kurs von {papier} ist unplausibel ({kurs.wert})")
         if kurs.datum is None or kurs.datum < lage.letzter_handelstag:
             return Abbruch(f"Kurs von {papier} ist zu alt ({kurs.datum})")
+    return regel_0_einzahlung_plausibel(lage, einstellungen.grenzen)
+
+
+def regel_0_einzahlung_plausibel(lage: Lage, grenzen: Grenzen) -> Abbruch | None:
+    """Regel 0 (Einzahlung): Ohne Budget (budget_chf = 0) ist eine ungewöhnlich grosse Einzahlung verdächtig.
+
+    Einzahlung = Cash-Zuwachs seit dem letzten Lauf + Zuwachs von "investiert". Was Lotse selbst bewegt hat
+    (Käufe, Verkäufe, Gebühren, Ausschüttungen), hebt sich dabei auf. Ohne früheren Lauf zählt das ganze Cash.
+    Raus:   Abbruch, wenn die Einzahlung grösser als max_einzahlung_pro_lauf ist und Tim sie nicht bestätigt hat.
+            Mit Budget (budget_chf > 0) gibt es diese Prüfung nicht – dort begrenzt das Budget.
+    """
+    if grenzen.budget_chf != 0 or lage.einzahlung_bestaetigt:
+        return None
+    vorher = lage.cash_letzter_lauf if lage.cash_letzter_lauf is not None else 0.0
+    einzahlung = (lage.cash - vorher) + (lage.investiert - lage.investiert_letzter_lauf)
+    if einzahlung > grenzen.max_einzahlung_pro_lauf:
+        return Abbruch(f"Ungewöhnlich grosse Einzahlung: {einzahlung:.2f} CHF seit dem letzten Lauf "
+                       f"(Grenze {grenzen.max_einzahlung_pro_lauf:.2f} CHF). Bitte prüfen und bestätigen: "
+                       "python -m lotse.lauf --einzahlung-bestaetigt")
     return None
 
 
@@ -139,11 +165,21 @@ def regel_5_werte(stueck: dict[str, float], kurse: dict[str, Kurs]) -> dict[str,
 def regel_5_gesamt(werte: dict[str, float], cash: float, budget: float, investiert: float) -> float:
     """Regel 5b: Gesamtwert des Lotse-Depots in CHF = Summe der eigenen Werte + Lotse-Geld.
 
-    Lotse-Geld = das Kleinere von Cash und (Budget − investiert), nie negativ. So zählt das Geld von Bot C
-    auf demselben Konto nicht mit.
+    Lotse-Geld siehe `lotse_geld` (mit Budget nur das Restbudget, ohne Budget das ganze Cash).
     """
-    lotse_geld = max(min(cash, budget - investiert), 0.0)
-    return sum(werte.values()) + lotse_geld
+    return sum(werte.values()) + lotse_geld(cash, budget, investiert)
+
+
+def lotse_geld(cash: float, budget: float, investiert: float) -> float:
+    """Regel 5/7: Wie viel vom Cash gehört Lotse?
+
+    budget = 0: kein Budget – das ganze Cash (Lotse ist allein auf dem Konto).
+    budget > 0: das Kleinere von Cash und (Budget − investiert), nie negativ – so zählt das Geld von Bot C
+    auf demselben Paper-Konto nicht mit.
+    """
+    if budget == 0:
+        return max(cash, 0.0)
+    return max(min(cash, budget - investiert), 0.0)
 
 
 def regel_6_abweichungen(werte: dict[str, float], gesamt: float, ziel: dict[str, float]) -> dict[str, float]:
@@ -167,11 +203,12 @@ def regel_7_verfuegbar(cash: float, budget: float, investiert: float, gebuehr: f
 
     Rein:   Cash (CHF), Budget (CHF), bisher investiert (CHF), geschätzte Gebühr einer Order (CHF),
             Puffer in Prozent.
-    Raus:   Grundbetrag = das Kleinere von Cash und (Budget − investiert).
+    Raus:   Grundbetrag = Lotse-Geld (`lotse_geld`): mit Budget das Kleinere von Cash und (Budget − investiert),
+            ohne Budget (budget = 0) das ganze Cash.
             Verfügbar = Grundbetrag minus Gebühr minus Puffer (Prozent vom Grundbetrag). Nie negativ.
     Das Budget trennt Lotse vom Geld von Bot C auf demselben Paper-Konto.
     """
-    grundbetrag = min(cash, budget - investiert)
+    grundbetrag = lotse_geld(cash, budget, investiert)
     puffer = grundbetrag * puffer_prozent / 100
     return max(grundbetrag - gebuehr - puffer, 0.0)
 

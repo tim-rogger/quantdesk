@@ -194,3 +194,56 @@ def test_neue_order_wird_notiert_dann_gesendet(tmp_path, monkeypatch):
     (symbol, order), = ib.gesendet
     assert (symbol, order.orderRef, order.tif, order.outsideRth) == ("VWRL", "lotse-1-1", "DAY", False)
     assert Tagebuch(str(tmp_path)).zustaende() == {"lotse-1-1": GESENDET}
+
+
+# ---------------------------------------------------------------- Kasse (Einzahlungsprüfung)
+def test_kasse_des_letzten_erfolgreichen_laufs(tmp_path):
+    tb = Tagebuch(str(tmp_path))
+    assert tb.kasse_letzter_lauf() is None
+    tb.vermerke_kasse(1, 500.0, 0.0, JETZT)
+    tb.vermerke_kasse(2, 1200.0, 300.0, JETZT)
+    assert Tagebuch(str(tmp_path)).kasse_letzter_lauf() == (1200.0, 300.0)
+
+
+# ---------------------------------------------------------------- Ausschüttungen
+def gekauft(tb, papier="CSBGC7", menge=2.0, preis=100.0, wann=dt.datetime(2026, 9, 1, 10, 0), nr=1):
+    ref = tb.notiere(nr, 1, papier, "KAUF", menge * preis, menge, preis, JETZT)
+    tb.buche_ausfuehrung(ref, f"E{nr}", papier, "KAUF", menge, preis, JETZT, gebuehr=0.0, ausgefuehrt=wann)
+
+
+def test_ausschuettung_eigener_position_senkt_investiert(tmp_path):
+    tb = Tagebuch(str(tmp_path))
+    gekauft(tb)  # 200 investiert
+    assert tb.buche_dividende("D1", "CSBGC7", 4.0, dt.date(2026, 10, 5), 2.0, JETZT) == pytest.approx(4.0)
+    assert tb.buche_dividende("Q1", "CSBGC7", -1.4, dt.date(2026, 10, 5), 2.0, JETZT) == pytest.approx(-1.4)
+    assert tb.investiert() == pytest.approx(200.0 - 2.6) and tb.dividenden() == pytest.approx(2.6)
+
+
+def test_ausschuettung_fremder_papiere_zaehlt_nicht(tmp_path):
+    tb = Tagebuch(str(tmp_path))
+    gekauft(tb)
+    assert tb.buche_dividende("D2", "AAPL", 12.0, dt.date(2026, 10, 5), 10.0, JETZT) is None  # z.B. Bot C
+    assert tb.investiert() == pytest.approx(200.0)
+
+
+def test_ausschuettung_vor_dem_eigenen_kauf_zaehlt_nicht(tmp_path):
+    tb = Tagebuch(str(tmp_path))
+    gekauft(tb, wann=dt.datetime(2026, 10, 7, 10, 0))
+    assert tb.buche_dividende("D3", "CSBGC7", 4.0, dt.date(2026, 10, 5), 2.0, JETZT) is None
+
+
+def test_ausschuettung_nur_lotses_anteil(tmp_path):
+    tb = Tagebuch(str(tmp_path))
+    gekauft(tb)  # Lotse 2 Stück, im Konto 4 (2 gehören jemand anderem)
+    assert tb.buche_dividende("D4", "CSBGC7", 8.0, dt.date(2026, 10, 5), 4.0, JETZT) == pytest.approx(4.0)
+
+
+def test_ausschuettung_doppelt_oder_ungueltig_wird_nicht_gebucht(tmp_path):
+    tb = Tagebuch(str(tmp_path))
+    gekauft(tb)
+    assert tb.buche_dividende("D5", "CSBGC7", 4.0, dt.date(2026, 10, 5), 2.0, JETZT) is not None
+    assert tb.buche_dividende("D5", "CSBGC7", 4.0, dt.date(2026, 10, 5), 2.0, JETZT) is None
+    for betrag in (math.nan, math.inf, UNSET_DOUBLE, None, "4"):
+        assert tb.buche_dividende("D6", "CSBGC7", betrag, dt.date(2026, 10, 5), 2.0, JETZT) is None
+    assert tb.buche_dividende("D7", "CSBGC7", 4.0, None, 2.0, JETZT) is None
+    assert tb.dividenden() == pytest.approx(4.0)
