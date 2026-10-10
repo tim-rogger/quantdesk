@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>QuantDesk · System</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/system.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>System</h1>
+      <p id="zusammenfassung" class="muted small">Lade …</p>
+    </div>
+    <nav class="nav"><a href="/">‹ Dashboard</a></nav>
+  </header>
+
+  <!-- Die wichtigste Warnung: IBKR meldet ein Konto, das nicht mit DU beginnt -->
+  <div id="paper-warnung" class="banner danger" hidden></div>
+  <div id="veraltet" class="banner warn" hidden></div>
+
+  <main class="system">
+    <section class="panel skizze-panel">
+      <svg id="skizze" role="img" aria-label="Skizze der Infrastruktur mit Statusfarben"></svg>
+      <p class="legende small">
+        <span><i class="gruen"></i>läuft</span>
+        <span><i class="gelb"></i>stimmt etwas nicht</span>
+        <span><i class="rot"></i>aus / nicht erreichbar</span>
+        <span><i class="grau"></i>noch nicht eingerichtet</span>
+      </p>
+    </section>
+
+    <section id="details" class="details" aria-label="Einzelheiten"></section>
+  </main>
+
+  <p class="muted small footer">Nur zum Anschauen. Neu starten: über Tailscale im Terminal.<br>
+    Stand: <span id="stand">–</span></p>
+
+  <script src="/static/system.js"></script>
+</body>
+</html>

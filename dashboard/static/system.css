@@ -1,0 +1,50 @@
+/* Systemseite (/system). Farben und Grundlayout kommen aus style.css. */
+:root { --grau: #6e7681; }
+
+main.system { max-width: 1100px; }
+.skizze-panel { margin-top: 0; padding: 8px; }
+svg#skizze { width: 100%; height: auto; display: block; }
+svg#skizze a { cursor: pointer; }
+svg#skizze text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+
+.legende { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 6px 4px 2px; color: var(--muted); }
+.legende i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+.legende i.gruen { background: var(--green); }
+.legende i.gelb { background: var(--amber); }
+.legende i.rot { background: var(--red); }
+.legende i.grau { border: 1.5px dashed var(--grau); width: 8px; height: 8px; }
+
+/* Daten älter als 2 Minuten: alles abblenden – lieber "ich weiss es nicht" als ein altes Grün */
+body.veraltet main { filter: grayscale(1); opacity: 0.4; }
+
+.karte { background: var(--panel); border: 1px solid var(--line); border-left: 5px solid var(--grau);
+  border-radius: 10px; padding: 10px 12px; margin-top: 10px; scroll-margin-top: 12px; }
+.karte.gruen { border-left-color: var(--green); }
+.karte.gelb { border-left-color: var(--amber); }
+.karte.rot { border-left-color: var(--red); }
+.karte.grau { border-left-style: dashed; }
+.karte:target { outline: 2px solid var(--blue); }
+.karte h3 { font-size: 15px; margin: 0; display: flex; align-items: center; gap: 8px; }
+.karte .stufe { margin: 2px 0 0 28px; font-size: 12px; color: var(--muted); }
+.punkt { flex: none; width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center;
+  font-size: 12px; font-weight: 700; color: var(--bg); background: var(--grau); }
+.gruen .punkt { background: var(--green); }
+.gelb .punkt { background: var(--amber); }
+.rot .punkt { background: var(--red); }
+.grau .punkt { background: transparent; color: var(--grau); border: 1.5px dashed var(--grau); }
+.gruende { margin: 6px 0 0; padding-left: 28px; font-weight: 600; font-size: 13px; }
+.rot .gruende { color: var(--red); }
+.gelb .gruende { color: var(--amber); }
+dl.werte { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; font-size: 13px; margin: 8px 0 0; }
+dl.werte dt { color: var(--muted); }
+dl.werte dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.modus { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: var(--line); }
+.modus.paper { background: #3d2a00; color: var(--amber); }
+.modus.probe { background: #12304d; color: var(--blue); }
+.modus.echt { background: var(--red); color: #fff; }
+
+@media (min-width: 900px) {
+  main.system { display: grid; grid-template-columns: minmax(360px, 480px) 1fr; gap: 16px; align-items: start; }
+  .skizze-panel { position: sticky; top: 12px; }
+  .details .karte:first-child { margin-top: 0; }
+}

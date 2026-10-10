@@ -120,9 +120,14 @@ services:
     tmpfs:
       - /tmp
     env_file: .env
-    environment: *quantdesk-env
+    environment:
+      <<: *quantdesk-env
+      QUANTDESK_SYSTEM_FILE: /state/system/system.json
     volumes:
       - ./state/data:/state/data       # nur den Datenordner (für STOP-ALL beschreibbar)
+      # Systemseite /system: nur LESEN, was der Sammler auf dem Host schreibt. Kein Docker-Socket hier –
+      # wer den Socket hat, ist auf dem Server praktisch root (siehe systemstatus/__init__.py).
+      - ./state/system:/state/system:ro
     ports:
       - "127.0.0.1:8080:8000"
     depends_on:

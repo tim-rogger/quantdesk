@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -25,6 +26,25 @@ from quantdesk.status import STOP_FILE, read_jsonl
 STATIC = Path(__file__).parent / "static"
 MAX_PIN_FAILS = 5
 LOCKOUT_SECONDS = 15 * 60
+
+
+def read_system_file(path: Path) -> dict:
+    """system.json lesen, die der Sammler (systemstatus, läuft auf dem Host) alle 30 s schreibt.
+
+    Fehlt die Datei oder ist sie kaputt, gibt es einen Hinweis statt eines Absturzes. nan/inf (darf der
+    Sammler nie schreiben) werden zu null – sonst könnte die Seite die Antwort nicht lesen.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"fehlt": True, "grund": "Noch keine Daten – läuft der Sammler (quantdesk-systemstatus)?"}
+    except OSError:
+        return {"fehlt": True, "grund": "Datei nicht lesbar."}
+    try:
+        data = json.loads(text, parse_constant=lambda _: None)
+    except ValueError:
+        return {"fehlt": True, "grund": "Datei unvollständig oder kaputt."}
+    return data if isinstance(data, dict) else {"fehlt": True, "grund": "Datei hat ein unerwartetes Format."}
 
 
 class StopRequest(BaseModel):
@@ -89,6 +109,17 @@ def create_app(settings=None, notifier: Notifier | None = None) -> FastAPI:
                       "Über das Dashboard. Beim nächsten Lauf werden alle Systeme ausgeschaltet; offene Orders bleiben "
                       "bei IBKR – bei Bedarf im Portal stornieren.", "error")
         return {"ok": True, "message": "STOP-ALL aktiv. Der Bot handelt ab dem nächsten Lauf nicht mehr."}
+
+    # --- Systemseite: nur lesen. Hier gibt es bewusst keine POST-Route und keinen Knopf.
+    system_file = Path(os.getenv("QUANTDESK_SYSTEM_FILE", "state/system/system.json"))
+
+    @app.get("/api/system")
+    def system_status() -> JSONResponse:
+        return JSONResponse(read_system_file(system_file), headers={"Cache-Control": "no-store"})
+
+    @app.get("/system")
+    def system_page() -> FileResponse:
+        return FileResponse(STATIC / "system.html", headers={"Cache-Control": "no-cache"})
 
     @app.get("/healthz")
     def health() -> dict:
