@@ -28,13 +28,19 @@ def test_logik_importiert_nur_die_standardbibliothek():
 
 
 # ---------------------------------------------------------------- Config
-def test_committete_config_ist_vorschlag_mit_offenen_wertpapieren():
+def test_committete_config_ist_vorschlag_und_vollstaendig():
     cfg, _ = lauf.lies_config()
     assert cfg["modus"] == "VORSCHLAG"  # nie etwas anderes committen
-    assert set(cfg["wertpapiere"].values()) == {"TODO"}  # nichts Erfundenes
+    assert "TODO" not in cfg["wertpapiere"].values()  # von Tim gewählt (WERTPAPIERE.md)
     assert cfg["push"]["thema"] == "lotse" and cfg["verbindung"]["konto"].startswith("DU")
     assert cfg["verbindung"]["client_id"] != 17  # 17 = Bot C
-    assert lauf.pruefe_config(cfg) == ["Wertpapiere noch nicht gewählt: aktien, anleihen (siehe lotse/WERTPAPIERE.md)"]
+    assert lauf.pruefe_config(cfg) == []
+
+
+def test_offene_wertpapiere_werden_gemeldet():
+    cfg, _ = lauf.lies_config()
+    cfg = {**cfg, "wertpapiere": {"aktien": "TODO", "anleihen": "CSBGC7"}}
+    assert lauf.pruefe_config(cfg) == ["Wertpapiere noch nicht gewählt: aktien (siehe lotse/WERTPAPIERE.md)"]
 
 
 def test_einstellungen_aus_config_mit_boersenkuerzeln_in_reihenfolge():
@@ -258,3 +264,79 @@ def test_konto_kommission_nur_wenn_ibkr_sie_gemeldet_hat():
     ib.ausfuehrung("lotse-1-2", "E2")  # noch keine Meldung: ib_async hat commission 0, execId leer
     gebuehren = {a.exec_id: a.gebuehr for a in konto(ib).ausfuehrungen()}
     assert gebuehren == {"E1": 1.25, "E2": None}
+
+
+# ---------------------------------------------------------------- Kurse: historisch zuerst, verzögert als Fallback
+GESTERN = dt.date(2026, 10, 8)
+
+
+def test_kurs_kommt_aus_dem_letzten_tages_schlusskurs_ohne_live_abfrage():
+    ib = FakeIB()
+    ib.historie = {"SSAC": [(dt.date(2026, 10, 7), 101.0), (GESTERN, 102.5)]}
+    k = konto(ib)
+    kurse = k.kurse(["SSAC"])
+    assert kurse["SSAC"] == logik.Kurs(102.5, GESTERN)  # jüngster Balken, mit seinem Datum
+    assert ib.ticker_aufrufe == [] and k.kursquellen == {"SSAC": "historisch"}
+    (symbol, zeitraum, balken, art, nur_handelszeit), = ib.historie_aufrufe
+    assert (balken, nur_handelszeit) == ("1 day", True)
+
+
+@pytest.mark.parametrize("datum", ["20261008", dt.datetime(2026, 10, 8, 17, 30)])
+def test_kurs_datum_aus_text_oder_zeitpunkt(datum):
+    ib = FakeIB()
+    ib.historie = {"SSAC": [(datum, 102.5)]}
+    assert konto(ib).kurse(["SSAC"])["SSAC"] == logik.Kurs(102.5, GESTERN)
+
+
+def test_ohne_historie_fallback_auf_verzoegerte_daten():
+    ib = FakeIB()  # historie leer: so antwortet IBKR bei Error 354/162
+    ib.preise = {"CSBGC7": (float("nan"), 98.75, dt.datetime(2026, 10, 9, 9, 15))}
+    k = konto(ib)
+    assert k.kurse(["CSBGC7"])["CSBGC7"] == logik.Kurs(98.75, dt.date(2026, 10, 9))
+    assert ib.md_typen[-1] == 3 and k.kursquellen == {"CSBGC7": "verzögert"}
+
+
+def test_historie_mit_fehler_fallback_auf_verzoegerte_daten():
+    ib = FakeIB()
+    ib.historie_fehler = True
+    ib.preise = {"SSAC": (102.0, 101.0, dt.datetime(2026, 10, 9, 10, 0))}
+    assert konto(ib).kurse(["SSAC"])["SSAC"] == logik.Kurs(102.0, dt.date(2026, 10, 9))
+
+
+def test_unbrauchbare_balken_werden_uebersprungen():
+    ib = FakeIB()
+    ib.historie = {"SSAC": [(GESTERN, 101.0), (dt.date(2026, 10, 9), float("nan")), (None, 103.0)]}
+    assert konto(ib).kurse(["SSAC"])["SSAC"] == logik.Kurs(101.0, GESTERN)
+
+
+def test_weder_historie_noch_verzoegert_kurs_fehlt():
+    k = konto(FakeIB())
+    assert k.kurse(["SSAC"])["SSAC"] == logik.Kurs(None, None) and k.kursquellen == {}
+
+
+def lauf_mit_historie(tmp_path, historie, modus="VORSCHLAG"):
+    cfg, text = lauf.lies_config()
+    cfg = {**cfg, "modus": modus, "wertpapiere": {"aktien": "SSAC", "anleihen": "CSBGC7"}}
+    ib = FakeIB()
+    ib.historie = historie
+    push = Push()
+    ergebnis = lauf.laufe(cfg, text, konto(ib), Tagebuch(str(tmp_path)), push, JETZT,
+                          handelstag=lambda d: GESTERN)
+    return ergebnis, push, ib
+
+
+def test_schlusskurs_von_gestern_ist_frisch_genug(tmp_path):
+    ergebnis, push, ib = lauf_mit_historie(tmp_path, {"SSAC": [(GESTERN, 102.5)], "CSBGC7": [(GESTERN, 98.7)]})
+    assert ergebnis.ok and ergebnis.orders == 1 and ib.ticker_aufrufe == []
+    assert "Kurse: SSAC historisch (08.10.), CSBGC7 historisch (08.10.)" in push.gesendet[-1]["message"]
+
+
+def test_schlusskurs_aelter_als_ein_handelstag_stoppt_ueber_regel_0(tmp_path):
+    alt = dt.date(2026, 10, 6)
+    ergebnis, push, ib = lauf_mit_historie(tmp_path, {"SSAC": [(alt, 102.5)], "CSBGC7": [(GESTERN, 98.7)]})
+    assert not ergebnis.ok and "SSAC" in ergebnis.text and "zu alt" in ergebnis.text and ib.gesendet == []
+
+
+def test_kein_kurs_ueber_beide_wege_stoppt_ueber_regel_0(tmp_path):
+    ergebnis, push, ib = lauf_mit_historie(tmp_path, {"SSAC": [(GESTERN, 102.5)]})  # CSBGC7: nichts
+    assert not ergebnis.ok and "Kurs von CSBGC7 fehlt" in ergebnis.text

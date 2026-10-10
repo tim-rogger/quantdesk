@@ -153,6 +153,9 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
         return _ende(tagebuch, nummer, jetzt, _stopp(push, f"Broker: {fehler}"))
     if offene:
         hinweise.append(f"{len(offene)} offene Lotse-Order(s) beim Broker (im VORSCHLAG nicht storniert)")
+    quellen = getattr(konto, "kursquellen", {})
+    if quellen:
+        hinweise.append("Kurse: " + ", ".join(f"{p} {q} ({lage.kurse[p].datum:%d.%m.})" for p, q in quellen.items()))
 
     try:
         plan = logik.plane(lage, e)  # Regel 0, 5–18 (Tim)
