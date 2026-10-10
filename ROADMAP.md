@@ -1,6 +1,6 @@
 # QuantDesk – Roadmap
 
-Stand: 29.09.2026. Keine Anlageberatung.
+Stand: 09.10.2026. Keine Anlageberatung.
 
 ## Fazit der Forschungsphase (abgeschlossen am 29.09.2026)
 
@@ -22,7 +22,7 @@ Stand: 29.09.2026. Keine Anlageberatung.
 - **Kandidat C wird nicht weiter im Backtest angepasst.** Wir haben diese Daten schon zu oft angeschaut, jede weitere
   Änderung wäre Überanpassung. Der einzige faire Test für C ist die Zukunft: der **Vorwärtstest** unten.
 
-### Ergebnis Walk-forward (7 Testjahre Okt 2019 – Sep 2026, Cash verzinst, Kosten inkl., USD)
+### Ergebnis Walk-forward (7 Testjahre Okt 2019 – Sep 2026, Cash verzinst, Kosten inkl., USD) – Aktien-Universum MIT Survivorship-Bias
 
 | Strategie | Rendite p.a. | Sharpe | max DD | Ø inv. | Mix gl. Inv. | Jahre besser | K1 | K2 | K3 | K4 |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -39,6 +39,37 @@ Stand: 29.09.2026. Keine Anlageberatung.
 | A: Dual Momentum breit | 14.5 % | 0.66 | −29.7 % | 100 % | 17.1 % | 3/7 | ✗ | ✓ | ✗ | ✗ |
 
 \* aufgebläht durch Survivorship-Bias.
+
+## Forschungsphase 2 – Fazit Kandidat D (09.10.2026)
+
+**Kandidat D (Trendfolge über 9 Anlageklassen) fällt in allen drei Varianten durch.** Das gilt in Fassung A und B,
+in USD und CHF. A und B urteilen gleich. Bericht: `research/ergebnisse/D-snapshot-2026-10-09.md`, Datenstand
+`snapshot-2026-10-09`, Code `2ae7f1e`, N = 3.
+
+- **Nur K2 erfüllt:** Der grösste Rückgang beträgt −10 bis −21 %, bei SPY −55 %.
+- **Kein risikobereinigter Vorteil:** In B (2007–2026, USD) liegt die Sharpe bei 0.52–0.55, also genau auf dem Niveau
+  von SPY (0.55). K1 verlangt 0.75.
+  - D war nur in 4–8 von 20 Jahren besser, nötig wären 14.
+  - Die Rendite (4.7–7.8 % p.a.) liegt unter SPY + T-Bill mit gleichem Investitionsgrad (K4).
+  - Die DSR verfehlt die 0.95 knapp (0.93–0.94). In A (USD) wäre sie erfüllt.
+- **In CHF klar schwächer** (Sharpe 0.29–0.43 in B): Ein grosser Teil liegt in USD-Anleihen und Cash, und der Dollar
+  schwankt für einen Franken-Anleger mit.
+- **Das einfache 60/40 SPY/IEF hat eine höhere Sharpe** (0.63 in USD) als jede Variante von D. Gegenüber reiner
+  Diversifikation bringt der Trendfilter etwas (gleich gewichtet 0.44, Risikoparität 0.49), aber nicht genug.
+- **Sicht 2:** Rechnerisch auf die SPY-Schwankung skaliert (Hebel 1.5–3.2, Finanzierung 1.5–6.8 % p.a.) bringt in B
+  keine Variante mehr Rendite als SPY (bestes Ergebnis D3 mit 9.5 % gegen 11.0 %). Nur in A lag D3 knapp vorn
+  (11.1 % gegen 10.9 %). B gilt.
+- **Mischungen** (Kennzahl, **kein** Bestehen): 50 % SPY + 50 % D3 senkt in B den grössten Rückgang von −55 % auf −33 %
+  und kostet 1.2 % p.a. Die Sharpe steigt in USD um +0.09, in CHF um +0.03. Mit D1 oder D2 verbessert sich die
+  Sharpe in CHF nicht. Die Korrelation von D zu SPY liegt bei 0.45–0.57.
+- **Die Verkettung ist nicht der Grund:** Fassung C (Ersatzreihen korrigiert) weicht von A um 0.1 % des Endwerts ab.
+  Die Nebenauswertung ab 1996 entscheidet nicht. Sie zeigt eine bessere Sharpe (0.66–0.70 gegen 0.49), aber auch dort
+  ist D nur in 13–16 von 31 Jahren besser.
+- **Erwartung erfüllt:** Vorher stand in der Anmeldung: „D fällt nach Sicht 1 eher durch“, kleine Rückgänge, Rendite
+  unter SPY. Genau so ist es gekommen.
+
+**Folgen:** D wird nicht angepasst (Anmeldung) und geht nicht in den Vorwärtstest. Der Zähler N steht bei 3 und
+steigt mit jeder weiteren Variante. Nächste Kandidaten: E und F, jeweils mit eigener Anmeldung.
 
 ## Bestehen-Regel für Backtests (Phase 1)
 
@@ -57,6 +88,33 @@ Handelskosten inklusive, Auswertung in USD **und** CHF. Massstab: Kaufen & Halte
 |---|---|---|
 | 29.09.2026 | Erste Fassung: K1 „Sharpe höher als SPY“, K2, K3 | vor dem ersten Walk-forward-Lauf |
 | 29.09.2026 | **Vor dem Test von Kandidat A verschärft:** K1 +0.2, neu K4, Cash-Zinsen, Sharpe mit Zins, CHF, VT und 60/40 | Mit der ersten Fassung hätte schon 0.81 gegen 0.80 bestanden, und Strategien mit viel Cash sahen ohne Zinsvergleich zu gut aus. Das Ergebnis von A war zu diesem Zeitpunkt nicht bekannt. |
+
+## Bestehen-Regel für Backtests in Forschungsphase 2 (ETF-Universum) – festgelegt 09.10.2026, von Tim mit der Anmeldung D bestätigt
+
+Festgelegt, **bevor** ein Ergebnis von Phase 2 bekannt ist. Die Phase-1-Regel oben bleibt unverändert und gilt für Phase 1.
+Datenstand, Fassungen und Zeiträume: `research/DATEN.md`. Anmeldung je Kandidat: `research/anmeldungen/`.
+
+**Sicht 1 – risikobereinigt** (Massstab SPY halten; alle fünf in USD **und** CHF; in Fassung A und B, bei Abweichung gilt B):
+
+| # | Kriterium |
+|---|---|
+| K1 | Sharpe ≥ SPY + 0.2 |
+| K2 | max Drawdown nicht schlimmer als SPY |
+| K3 | in ≥ 2/3 der Testjahre (Blöcke von 252 Handelstagen) höhere Sharpe als SPY |
+| K4 | mehr Rendite p.a. als SPY + T-Bill mit demselben Ø Investitionsgrad |
+| K5 | **neu – Mehrfachtest:** Deflated Sharpe Ratio (Bailey/López de Prado) ≥ 0.95, N = Versuche laut `research/registry.md` |
+
+**Sicht 2 – risiko-normiert** (Kennzahl, kein Hebel im Test oder Bot): auf SPY-Schwankung skaliert, Finanzierung T-Bill
++ 1.5 %. R1 Rendite p.a. > SPY, R2 max DD nicht schlimmer. Ausgewiesen werden Hebel, max DD, schlimmster Monat und
+Finanzierungskosten. Beide Sichten laufen parallel, keine ersetzt die andere.
+
+Ein Kandidat kommt nur in den Vorwärtstest, wenn er Sicht 1 besteht, und nur mit einer vorher festgelegten Regel
+für den Vorwärtstest (wie bei C).
+
+| Datum | Änderung | Begründung |
+|---|---|---|
+| 09.10.2026 | Entwurf: K1–K4 wie Phase 1, neu K5 (DSR ≥ 0.95), Sicht 2, Fassungen A/B/C, echter CHF-Zins | Mehrfachtests (Phase 1: 9 Varianten bzw. 149 Kombinationen), wachsendes und verkettetes Universum, Renditeziel (Nachtrag 09.10.). Kein Ergebnis von Phase 2 bekannt. Zählweise von N entscheidet Tim (Anmeldung D). |
+| 09.10.2026 | **Bestätigt von Tim** (vor dem ersten Lauf): N = `effektiv` als laufender Zähler über alle Varianten auf ETF-Datenständen (Start 3, sinkt nie); zusätzliche Kennzahl Mischungen SPY + Kandidat (90/10 … 50/50), **kein** Kriterium | Die Phase-1-Versuche liefen auf anderem Universum und Zeitraum. Für ein Depot ist „verbessert der Kandidat ein SPY-Depot?“ die nützlichere Frage. Kein Ergebnis von D war bekannt. |
 
 ## Bestehen-Regel für den Vorwärtstest von C (Phase 3) – festgelegt am 29.09.2026, VOR dem Start
 
@@ -136,6 +194,24 @@ verletzt: Es wurde nichts doppelt gehandelt, nur unvollständig gebucht. Der Vor
 - [ ] Monatlich `forward_test.py report` (bzw. im Dashboard: F1–F5)
 - [ ] Nach 126 Handelstagen: Urteil nach F1–F5 (Vorfälle oben beim Urteil erwähnen)
 
+### Forschungsphase 2 – neue Kandidaten auf dem ETF-Universum ⏳ seit 09.10.2026 (läuft neben dem Vorwärtstest)
+Läuft neben dem Vorwärtstest. Ändert weder den Bot noch C noch eine Bestehen-Regel. **Kein Hebel, kein echtes Geld.**
+- [x] Teil 1 – Datenbasis: ETF-Universum ohne Survivorship-Bias, 9 Anlageklassen + Cash, verlängert mit dokumentierten
+      Ersatzreihen (6 Klassen ab 1996, alle 9 ab 2004), USD/CHF und CHF-Zins von FRED (`research/DATEN.md`,
+      `python research_etf.py daten`). Die Aktien-Studie aus Phase 1 ist in allen Berichten als „mit Survivorship-Bias“ markiert.
+- [x] Daten eingefroren: `research/data/snapshot-2026-10-09/` (Rohdaten + MANIFEST mit Prüfsummen), Vergleich von
+      Datenständen; Fassungen A (verkettet), B (nur echte ETFs, ab 2007), C (Ersatz korrigiert)
+- [x] Teil 2 – Register aller getesteten Strategien (`research/registry.md`), Deflated Sharpe Ratio
+      (`quantdesk/multitest.py`), Bestehen-Regel Phase 2 (Entwurf oben), Anmeldungen mit Sperre für Läufe
+- [x] Tim hat die Anmeldung D bestätigt (N effektiv als laufender Zähler, Mischungen als Kennzahl)
+- [ ] Mehr-Strategien-Architektur (C als erste Instanz, getrennte Buchführung, Budgets, Dashboard, Korrelation)
+      **Zweck:** Der Vorwärtstest ist **kein Wettbewerb** zwischen Strategien. Wer über sechs Monate vorne liegt,
+      entscheidet fast nur der Zufall. Welche Strategie besser ist, entscheidet der Backtest über 20 Jahre. Der
+      Vorwärtstest prüft nur, ob die Umsetzung stimmt (F4, F5). Eine zweite Instanz läuft erst, wenn ihr Kandidat
+      die Backtest-Regel bestanden hat und eine eigene Vorwärtstest-Anmeldung vorliegt.
+- [x] Kandidat D – Trendfolge über mehrere Anlageklassen: **durchgefallen** (alle drei Varianten, Fazit oben)
+- [ ] Kandidaten E (Gegenbewegung auf Index-ETFs) und F (defensive Aktien-ETFs); G = Risikoparität als Massstab
+
 ### Phase 4 – Entscheidung über echtes Geld (Tims Entscheidung)
 - Nur, wenn C den Vorwärtstest besteht, und auch dann ist das nur ein schwaches Signal.
 - Der Bot hat bewusst **keinen** Echtgeld-Modus. Das wäre ein eigener, bewusster Umbau mit zusätzlichen
@@ -146,7 +222,8 @@ verletzt: Es wurde nichts doppelt gehandelt, nur unvollständig gebucht. Der Vor
 ## Bekannte Grenzen
 
 - Survivorship-Bias: Einzelaktien-Universum enthält nur heute existierende Firmen (ETFs kaum betroffen).
-- Nicht eingerechnet: Schlupf im Backtest, Steuern, Wechselkosten CHF → USD; CHF-Zins als 0 angenommen.
+- Nicht eingerechnet: Schlupf im Backtest, Steuern, Wechselkosten CHF → USD; CHF-Zins als 0 angenommen (Phase 1;
+  Phase 2 rechnet mit dem echten CHF-Zins von FRED).
 - Cash-Zinsen als Näherung: nachträglich auf die Kapitalkurve gerechnet, nicht in die Handelsentscheidungen.
 - Journal-Tag = Tag, an dem der Bot den Fill bemerkt (UTC). Läuft der Bot über Nacht nicht, kann ein Fill einen Tag später gebucht werden.
 - 10 Jahre Daten = wenige Marktphasen; ein Crash wie 2008 ist nicht enthalten.

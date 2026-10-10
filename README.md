@@ -335,6 +335,8 @@ DRY_RUN-Fills, zum Ausprobieren.
 bot.py                      Tkinter-GUI (Einstiegspunkt)
 backtest.py                 Backtest einzelner Aktien (Kommandozeile)
 research.py                 Strategie-Vergleich auf ~50 Aktien (Kommandozeile)
+research_etf.py             Forschungsphase 2 (ETF-Universum): snapshot, daten, lauf (nur mit bestätigter Anmeldung)
+research/                   DATEN.md (Datenbasis), registry.md (alle getesteten Strategien), anmeldungen/, data/ (Datenstände)
 forward_test.py             Vorwärtstest von C: setup, report, migrate, close, import-trades
 run_daily.py                headless Tageslauf (Server): trade | reconcile
 scheduler.py                startet run_daily.py an NYSE-Handelstagen (10:00 / 15:30 New York)
@@ -365,6 +367,12 @@ quantdesk/
   metrics.py                Kennzahlen: Rendite p.a., Sharpe, max Drawdown, Ø investiert
   research.py               Portfolio-Vergleich: Grid, Momentum, Kaufen & Halten, ETF; Training/Test
   walkforward.py            Walk-forward-Test und Bestehen-Regel
+  etf_data.py               ETF-Universum, Verkettung mit Ersatzreihen, Fassungen A/B/C
+  snapshot.py               eingefrorene Datenstände (Rohdaten + Prüfsummen), Vergleich
+  allocation.py             Strategie-Schnittstelle (Kurse rein, Zielgewichte raus) + Simulator
+  etf_strategies.py         Kandidat D (Trendfolge), Vergleichsportfolios inkl. Risikoparität
+  phase2.py, phase2_run.py  Kennzahlen, Bestehen-Regel Phase 2 (K1–K5, Sicht 2), Ablauf
+  multitest.py, trials.py   Deflated Sharpe Ratio, Register der getesteten Strategien, Anmeldungen
   trend.py                  Trendfilter im Live-Betrieb (dieselbe Regel wie im Backtest)
   journal.py                Handelsjournal (journal.jsonl)
   forward.py                Vorwärtstest: C-Systeme anlegen, Report, Kriterien F1–F5

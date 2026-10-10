@@ -156,8 +156,9 @@ def test_load_history_uses_cache(tmp_path):
         def raise_for_status(self):
             pass
 
-        def json(self):
-            return _yahoo([0], [10], [11], [9], [10], [10])
+        @property
+        def content(self):  # Rohbytes wie von requests
+            return json.dumps(_yahoo([0], [10], [11], [9], [10], [10])).encode()
 
     class Session:
         calls = 0
