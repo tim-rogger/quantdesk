@@ -78,7 +78,8 @@ def einstellungen(cfg: dict) -> logik.Einstellungen:
     g, geb, aus = cfg["grenzen"], cfg["gebuehren"], cfg["ausfuehren"]
     ziel = {cfg["wertpapiere"][name]: float(prozent) for name, prozent in cfg["ziel"].items()}
     grenzen = logik.Grenzen(
-        budget_chf=float(g["budget_chf"]), mindestbetrag=float(g["mindestbetrag"]), schwelle=float(g["schwelle"]), mindestdepot=float(g["mindestdepot"]),
+        budget_chf=float(g["budget_chf"]), max_einzahlung_pro_lauf=float(g["max_einzahlung_pro_lauf"]),
+        mindestbetrag=float(g["mindestbetrag"]), schwelle=float(g["schwelle"]), mindestdepot=float(g["mindestdepot"]),
         puffer_prozent=float(g["puffer_prozent"]), max_pro_order=float(g["max_pro_order"]),
         max_pro_tag=float(g["max_pro_tag"]), max_orders_pro_tag=int(g["max_orders_pro_tag"]),
         gebuehr_pro_order=float(geb["pro_order"]), limit_abstand_prozent=float(aus["limit_abstand_prozent"]),
@@ -102,7 +103,8 @@ def gleiche_ab(konto: Konto, tagebuch: Tagebuch, jetzt: dt.datetime) -> list[str
     hinweise = []
     ausfuehrungen = konto.ausfuehrungen()
     for a in ausfuehrungen:  # Regel 15: nur die gemeldete Menge zählt
-        if tagebuch.buche_ausfuehrung(a.ref, a.exec_id, a.papier, a.seite, a.menge, a.preis, jetzt, a.gebuehr):
+        if tagebuch.buche_ausfuehrung(a.ref, a.exec_id, a.papier, a.seite, a.menge, a.preis, jetzt, a.gebuehr,
+                                      a.zeit):
             hinweise.append(f"{a.papier}: {a.seite} {a.menge:g} Stück zu {a.preis} gebucht ({a.ref})")
         elif a.gebuehr is not None and a.exec_id in tagebuch.ohne_gebuehr():
             tagebuch.buche_gebuehr(a.exec_id, a.gebuehr, jetzt)  # Kommission kam erst nach der Ausführung
@@ -121,9 +123,32 @@ def gleiche_ab(konto: Konto, tagebuch: Tagebuch, jetzt: dt.datetime) -> list[str
     return hinweise
 
 
+# --------------------------------------------------------------------------- Ausschüttungen
+def erfasse_dividenden(cfg: dict, konto: Konto, tagebuch: Tagebuch, jetzt: dt.datetime) -> list[str]:
+    """Ausschüttungen eigener Papiere aus der Flex-Abfrage buchen (senken "investiert"). Liefert Hinweise."""
+    query_id = str(cfg.get("dividenden", {}).get("flex_query_id", "") or "")
+    token = os.getenv("LOTSE_FLEX_TOKEN", "")
+    if not query_id or not token:
+        if tagebuch.eigene_stueck():
+            return ["Ausschüttungen werden nicht erfasst (Flex-Abfrage nicht eingerichtet: [dividenden] "
+                    "flex_query_id und LOTSE_FLEX_TOKEN)"]
+        return []
+    try:
+        gutschriften = konto.dividenden(token, query_id)
+        im_konto = konto.positionen()
+    except KontoFehler as fehler:
+        return [f"Ausschüttungen nicht gelesen: {fehler}"]
+    hinweise = []
+    for g in gutschriften:
+        gebucht = tagebuch.buche_dividende(g.id, g.papier, g.betrag, g.datum, im_konto.get(g.papier), jetzt)
+        if gebucht is not None:
+            hinweise.append(f"{g.papier}: {g.art} {gebucht:+.2f} CHF gebucht ({g.datum:%d.%m.})")
+    return hinweise
+
+
 # --------------------------------------------------------------------------- der Lauf
 def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Push, jetzt: dt.datetime,
-          handelstag=letzter_handelstag) -> Ergebnis:
+          handelstag=letzter_handelstag, einzahlung_bestaetigt: bool = False) -> Ergebnis:
     probleme = pruefe_config(cfg)
     if probleme:
         return _stopp(push, "Zieldatei unvollständig: " + "; ".join(probleme))
@@ -132,9 +157,13 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
         return _stopp(push, "Modus ECHT ist in dieser Stufe nicht erlaubt (nur Paper).")
     e = einstellungen(cfg)
     nummer = tagebuch.neuer_lauf(zieldatei, jetzt, modus)  # Regel 1
+    if einzahlung_bestaetigt:
+        tagebuch.vermerke_bestaetigung(nummer, jetzt)
     try:
         konto.verbinden()
         hinweise = gleiche_ab(konto, tagebuch, jetzt) if modus != "VORSCHLAG" else []
+        if modus != "VORSCHLAG":
+            hinweise += erfasse_dividenden(cfg, konto, tagebuch, jetzt)
         offene = konto.offene_orders()  # Regel 3
         if offene and modus != "VORSCHLAG":  # Regel 4 (im VORSCHLAG wird nichts an den Broker geschickt)
             bekannt = tagebuch.zustaende()
@@ -145,10 +174,14 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
             offene = konto.offene_orders()
         papiere = list(e.ziel) + [p for p in e.abbau if p not in e.ziel]
         heute_betrag, heute_orders = tagebuch.heute(jetzt.date())
+        kasse = tagebuch.kasse_letzter_lauf()
         lage = logik.Lage(cash=konto.cash(), stueck=konto.positionen(), eigene_stueck=tagebuch.eigene_stueck(),
                           kurse=konto.kurse(papiere), letzter_handelstag=handelstag(jetzt.date()),
                           mindestdepot_erreicht=tagebuch.mindestdepot_erreicht(), heute_betrag=heute_betrag,
-                          heute_orders=heute_orders, investiert=tagebuch.investiert())
+                          heute_orders=heute_orders, investiert=tagebuch.investiert(),
+                          cash_letzter_lauf=kasse[0] if kasse else None,
+                          investiert_letzter_lauf=kasse[1] if kasse else 0.0,
+                          einzahlung_bestaetigt=einzahlung_bestaetigt)
     except KontoFehler as fehler:
         return _ende(tagebuch, nummer, jetzt, _stopp(push, f"Broker: {fehler}"))
     if offene:
@@ -186,6 +219,7 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
     text = "\n".join(zeilen) if zeilen else "Nichts zu tun."
     if hinweise:
         text += "\n" + "\n".join(hinweise)
+    tagebuch.vermerke_kasse(nummer, lage.cash, lage.investiert, jetzt)  # Ausgangspunkt für die nächste Einzahlung
     gesamt = _gesamt(lage, e)
     if gesamt is not None and gesamt >= e.grenzen.mindestdepot:  # Regel 12: einmal vermerkt, nie neu errechnet
         tagebuch.vermerke_mindestdepot(nummer, gesamt, jetzt)
@@ -220,6 +254,8 @@ def _ende(tagebuch: Tagebuch, nummer: int, jetzt: dt.datetime, ergebnis: Ergebni
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Lotse: ein Lauf (Standard: Modus aus config.toml)")
     ap.add_argument("--config", default=CONFIG)
+    ap.add_argument("--einzahlung-bestaetigt", action="store_true",
+                    help="eine ungewöhnlich grosse Einzahlung für diesen Lauf bestätigen (Regel 0)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg, text = lies_config(args.config)
@@ -232,7 +268,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     ordner = os.getenv("LOTSE_ORDNER") or cfg.get("ablage", {}).get("ordner", "lotse-daten")
     try:
-        ergebnis = laufe(cfg, text, konto, Tagebuch(ordner), push, dt.datetime.now())
+        ergebnis = laufe(cfg, text, konto, Tagebuch(ordner), push, dt.datetime.now(),
+                         einzahlung_bestaetigt=args.einzahlung_bestaetigt)
     finally:
         konto.trennen()
     print(ergebnis.text)

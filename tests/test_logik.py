@@ -21,6 +21,8 @@ from lotse.logik import (
     Lage,
     Order,
     plane,
+    lotse_geld,
+    regel_0_einzahlung_plausibel,
     regel_0_pruefe_lage,
     regel_5_gesamt,
     regel_5_werte,
@@ -41,7 +43,7 @@ from lotse.logik import (
 
 HANDELSTAG = dt.date(2026, 10, 9)
 ZIEL = {"AKTIEN": 85.0, "ANLEIHEN": 15.0}
-GRENZEN = Grenzen(budget_chf=10_000, mindestbetrag=100, schwelle=5, mindestdepot=2000, puffer_prozent=1, max_pro_order=500,
+GRENZEN = Grenzen(budget_chf=10_000, max_einzahlung_pro_lauf=3000, mindestbetrag=100, schwelle=5, mindestdepot=2000, puffer_prozent=1, max_pro_order=500,
                   max_pro_tag=1000, max_orders_pro_tag=3, gebuehr_pro_order=3, limit_abstand_prozent=0.5,
                   bruchstueck_stellen=4)
 EINSTELLUNGEN = Einstellungen(ziel=ZIEL, abbau=(), grenzen=GRENZEN)
@@ -53,13 +55,15 @@ def frisch(wert=100.0):
 
 
 def lage(cash, stueck=None, eigene=None, kurse=None, mindestdepot_erreicht=False, heute_betrag=0.0, heute_orders=0,
-         investiert=None):
+         investiert=None, cash_letzter_lauf=None, investiert_letzter_lauf=0.0, einzahlung_bestaetigt=False):
     """investiert: ohne Angabe = Wert der Positionen zu 100 CHF (so viel hat Lotse dafür bezahlt)."""
     stueck = stueck or {}
     return Lage(cash=cash, stueck=stueck, eigene_stueck=dict(stueck) if eigene is None else eigene,
                 kurse=kurse or {"AKTIEN": frisch(), "ANLEIHEN": frisch()}, letzter_handelstag=HANDELSTAG,
                 mindestdepot_erreicht=mindestdepot_erreicht, heute_betrag=heute_betrag, heute_orders=heute_orders,
-                investiert=sum(stueck.values()) * 100.0 if investiert is None else investiert)
+                investiert=sum(stueck.values()) * 100.0 if investiert is None else investiert,
+                cash_letzter_lauf=cash_letzter_lauf, investiert_letzter_lauf=investiert_letzter_lauf,
+                einzahlung_bestaetigt=einzahlung_bestaetigt)
 
 
 def kaeufe(plan, papier=None):
@@ -405,3 +409,70 @@ def test_fall_cash_genau_max_pro_order_plus_gebuehr_order_hoechstens_max_pro_ord
     plan = plane(lage(503.0), EINSTELLUNGEN)
     assert plan.abbruch is None and plan.orders
     assert all(o.betrag <= 500.0 for o in plan.orders)
+
+
+# =========================================================================== Ohne Budget (budget_chf = 0)
+OHNE_BUDGET = Einstellungen(ziel=ZIEL, abbau=(), grenzen=replace(GRENZEN, budget_chf=0))
+
+
+def test_lotse_geld_ohne_budget_ist_das_ganze_cash():
+    assert lotse_geld(5000.0, budget=0.0, investiert=999.0) == 5000.0
+    assert lotse_geld(5000.0, budget=300.0, investiert=100.0) == 200.0
+    assert lotse_geld(-5.0, budget=0.0, investiert=0.0) == 0.0
+
+
+def test_regel_7_ohne_budget_rechnet_mit_dem_ganzen_cash():
+    assert regel_7_verfuegbar(5000.0, budget=0.0, investiert=999.0, gebuehr=3.0,
+                              puffer_prozent=1.0) == pytest.approx(4947.0)  # 5000 − 3 − 50
+
+
+def test_regel_5_ohne_budget_ganzes_cash_im_depotwert():
+    assert regel_5_gesamt({"AKTIEN": 1000.0}, cash=700.0, budget=0.0, investiert=1000.0) == pytest.approx(1700.0)
+
+
+def test_einzahlung_normal_wird_angelegt():
+    l = lage(700.0, cash_letzter_lauf=200.0)  # 500 eingezahlt
+    assert regel_0_einzahlung_plausibel(l, OHNE_BUDGET.grenzen) is None
+
+
+def test_einzahlung_ungewoehnlich_gross_regel_0_bitte_bestaetigen():
+    ergebnis = regel_0_einzahlung_plausibel(lage(5200.0, cash_letzter_lauf=200.0), OHNE_BUDGET.grenzen)
+    assert isinstance(ergebnis, Abbruch)
+    assert "Ungewöhnlich grosse Einzahlung" in ergebnis.grund and "5000.00" in ergebnis.grund
+    assert "--einzahlung-bestaetigt" in ergebnis.grund
+
+
+def test_einzahlung_bestaetigt_wird_angelegt():
+    l = lage(5200.0, cash_letzter_lauf=200.0, einzahlung_bestaetigt=True)
+    assert regel_0_einzahlung_plausibel(l, OHNE_BUDGET.grenzen) is None
+
+
+def test_eigener_verkaufserloes_ist_keine_einzahlung():
+    # Lotse hat für 4000 verkauft: Cash +4000, investiert −4000 → Einzahlung 0
+    l = lage(4200.0, cash_letzter_lauf=200.0, investiert=1000.0, investiert_letzter_lauf=5000.0)
+    assert regel_0_einzahlung_plausibel(l, OHNE_BUDGET.grenzen) is None
+
+
+def test_eigener_kauf_und_einzahlung_im_selben_monat():
+    # 700 gekauft (Cash −700, investiert +700) und 2500 eingezahlt → Einzahlung 2500 ≤ 3000
+    l = lage(3000.0, cash_letzter_lauf=1200.0, investiert=1700.0, investiert_letzter_lauf=1000.0)
+    assert regel_0_einzahlung_plausibel(l, OHNE_BUDGET.grenzen) is None
+
+
+def test_erster_lauf_ohne_budget_ganzes_cash_zaehlt_als_einzahlung():
+    assert isinstance(regel_0_einzahlung_plausibel(lage(10_000.0), OHNE_BUDGET.grenzen), Abbruch)
+    assert regel_0_einzahlung_plausibel(lage(2500.0), OHNE_BUDGET.grenzen) is None
+
+
+def test_mit_budget_keine_einzahlungspruefung():
+    assert regel_0_einzahlung_plausibel(lage(1_000_000.0, cash_letzter_lauf=0.0), BUDGET_300.grenzen) is None
+
+
+def test_fall_ohne_budget_einzahlung_wird_angelegt():
+    plan = plane(lage(1200.0, cash_letzter_lauf=200.0), OHNE_BUDGET)  # 1000 eingezahlt, Depot unter 2000
+    assert plan.abbruch is None and kaeufe(plan, "AKTIEN")[0].betrag == pytest.approx(500.0)  # gekappt
+
+
+def test_fall_ohne_budget_grosse_einzahlung_kein_handel():
+    plan = plane(lage(9000.0, cash_letzter_lauf=200.0), OHNE_BUDGET)
+    assert plan.abbruch is not None and plan.orders == [] and "Einzahlung" in plan.abbruch.grund

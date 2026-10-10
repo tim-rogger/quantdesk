@@ -251,7 +251,8 @@ SECRET_PATTERNS = [
     re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}"),
     re.compile(r"\btk_[a-z0-9]{29}\b"),  # ntfy-Token
     re.compile(r"\bK00[0-9][A-Za-z0-9+/]{20,}"),  # Backblaze applicationKey
-    re.compile(r"^(TWS_PASSWORD|RESTIC_PASSWORD|B2_ACCOUNT_KEY|NTFY_TOKEN|DASHBOARD_PIN|ANTHROPIC_API_KEY)=\S+", re.M),
+    re.compile(r"^(TWS_PASSWORD|RESTIC_PASSWORD|B2_ACCOUNT_KEY|NTFY_TOKEN|DASHBOARD_PIN|ANTHROPIC_API_KEY|"
+               r"LOTSE_FLEX_TOKEN)=\S+", re.M),
 ]
 
 

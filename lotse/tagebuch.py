@@ -5,6 +5,7 @@ Alles wird nur angehängt, nie überschrieben (JSON Lines, eine Zeile pro Ereign
   orders.jsonl         jede Order VOR dem Senden notiert, danach abgehakt (Regel 19)
   ausfuehrungen.jsonl  vom Broker gemeldete Ausführungen – nur sie erhöhen den Zähler (Regel 15)
   gebuehren.jsonl      Kommission je Ausführung (kann später kommen als die Ausführung)
+  dividenden.jsonl     Ausschüttungen eigener Papiere (Lotse-Anteil) – senken "investiert"
 
 Zustände einer Order: notiert → gesendet → ausgefuehrt | storniert | verworfen; oder notiert → vorschlag.
 Eine notierte, aber nie bestätigte Order wird nie ein zweites Mal gesendet: Der nächste Lauf gleicht sie mit
@@ -45,6 +46,13 @@ def gueltige_gebuehr(gebuehr) -> bool:
     return math.isfinite(gebuehr) and 0 <= gebuehr < GROESSTE_MENGE
 
 
+def gueltiger_betrag(betrag) -> bool:
+    """Ein Geldbetrag ist gültig, wenn er eine endliche Zahl ist (negativ erlaubt, z.B. Quellensteuer)."""
+    if isinstance(betrag, bool) or not isinstance(betrag, (int, float)):
+        return False
+    return math.isfinite(betrag) and abs(betrag) < GROESSTE_MENGE
+
+
 class Tagebuch:
     def __init__(self, ordner: str):
         self.ordner = ordner
@@ -53,6 +61,7 @@ class Tagebuch:
         self._orders = os.path.join(ordner, "orders.jsonl")
         self._ausfuehrungen = os.path.join(ordner, "ausfuehrungen.jsonl")
         self._gebuehren = os.path.join(ordner, "gebuehren.jsonl")
+        self._dividenden = os.path.join(ordner, "dividenden.jsonl")
 
     # ------------------------------------------------------------------ Dateien
     def _lies(self, pfad: str) -> list[dict]:
@@ -91,6 +100,20 @@ class Tagebuch:
         self._schreib(self._laeufe, {"lauf": nummer, "ereignis": "mindestdepot_erreicht", "zeit": jetzt.isoformat(),
                                      "gesamt": gesamt})
         return True
+
+    def vermerke_kasse(self, nummer: int, cash: float, investiert: float, jetzt: dt.datetime) -> None:
+        """Cash und "investiert" eines erfolgreichen Laufs – Ausgangspunkt der Einzahlungsprüfung (Regel 0)."""
+        self._schreib(self._laeufe, {"lauf": nummer, "ereignis": "kasse", "zeit": jetzt.isoformat(), "cash": cash,
+                                     "investiert": investiert})
+
+    def kasse_letzter_lauf(self) -> tuple[float, float] | None:
+        """(Cash, investiert) beim letzten erfolgreichen Lauf. None = es gab noch keinen."""
+        kassen = [e for e in self._lies(self._laeufe) if e["ereignis"] == "kasse"]
+        return (kassen[-1]["cash"], kassen[-1]["investiert"]) if kassen else None
+
+    def vermerke_bestaetigung(self, nummer: int, jetzt: dt.datetime) -> None:
+        """Tim hat eine grosse Einzahlung für diesen Lauf bestätigt."""
+        self._schreib(self._laeufe, {"lauf": nummer, "ereignis": "einzahlung_bestaetigt", "zeit": jetzt.isoformat()})
 
     def gesamt_letzter_lauf(self) -> float | None:
         """Depotwert des letzten beendeten Laufs, der einen Wert hatte (für Regel 12)."""
@@ -150,7 +173,7 @@ class Tagebuch:
 
     # ------------------------------------------------------------------ eigener Zähler (Regel 15)
     def buche_ausfuehrung(self, ref: str, exec_id: str, papier: str, seite: str, menge, preis,
-                          jetzt: dt.datetime, gebuehr=None) -> bool:
+                          jetzt: dt.datetime, gebuehr=None, ausgefuehrt: dt.datetime | None = None) -> bool:
         """Eine vom Broker gemeldete Ausführung buchen. Nur die AUSGEFÜHRTE Menge zählt, nie die Bestellmenge.
 
         Liefert False (und bucht nichts), wenn die Menge ungültig ist (nan, inf, 0, negativ, Platzhalter
@@ -173,7 +196,8 @@ class Tagebuch:
             return False
         self._schreib(self._ausfuehrungen, {"exec_id": exec_id, "ref": ref, "papier": papier, "seite": seite,
                                             "menge": float(menge), "preis": float(preis),
-                                            "zeit": jetzt.isoformat()})
+                                            "zeit": jetzt.isoformat(),
+                                            "ausgefuehrt": (ausgefuehrt or jetzt).isoformat()})
         if gebuehr is not None:
             self.buche_gebuehr(exec_id, gebuehr, jetzt)
         return True
@@ -204,12 +228,43 @@ class Tagebuch:
             summe += vorzeichen * e["menge"] * e["preis"]
         for e in self._lies(self._gebuehren):
             summe += e["gebuehr"]  # Kommission verbraucht Geld – beim Kauf wie beim Verkauf
+        for e in self._lies(self._dividenden):
+            summe -= e["lotse_betrag"]  # Ausschüttung = Cash, das aus der eigenen Position zurückkommt
         return summe
 
-    def eigene_stueck(self) -> dict[str, float]:
-        """Stück je Papier, die Lotse selbst gekauft (minus verkauft) hat – nur aus gebuchten Ausführungen."""
+    # ------------------------------------------------------------------ Ausschüttungen
+    def buche_dividende(self, gutschrift_id: str, papier: str, betrag, datum: dt.date | None, konto_stueck,
+                        jetzt: dt.datetime) -> float | None:
+        """Ausschüttung (oder Quellensteuer darauf, negativ) eines Papiers buchen – nur, wenn Lotse es am
+        Zahltag selbst hielt. Gehören nicht alle Stück im Konto Lotse, zählt nur sein Anteil
+        (eigene Stück / Stück im Konto). Liefert den gebuchten Lotse-Betrag oder None (nicht gebucht)."""
+        if not gueltiger_betrag(betrag) or datum is None or not gutschrift_id:
+            log.error("Gutschrift %s (%s): ungültig (%r, %r) – nicht gebucht", gutschrift_id, papier, betrag, datum)
+            return None
+        if any(e["id"] == gutschrift_id for e in self._lies(self._dividenden)):
+            return None
+        eigene = self.eigene_stueck(bis=datum).get(papier, 0.0)
+        if eigene <= 0:
+            return None  # Papier gehörte Lotse am Zahltag nicht – geht Lotse nichts an
+        im_konto = konto_stueck if gueltige_menge(konto_stueck) else eigene
+        anteil = min(eigene / max(im_konto, eigene), 1.0)
+        lotse_betrag = betrag * anteil
+        self._schreib(self._dividenden, {"id": gutschrift_id, "papier": papier, "betrag": float(betrag),
+                                         "datum": datum.isoformat(), "anteil": anteil, "lotse_betrag": lotse_betrag,
+                                         "zeit": jetzt.isoformat()})
+        return lotse_betrag
+
+    def dividenden(self) -> float:
+        """Summe der gebuchten Ausschüttungen (Lotse-Anteil, nach Quellensteuer)."""
+        return sum(e["lotse_betrag"] for e in self._lies(self._dividenden))
+
+    def eigene_stueck(self, bis: dt.date | None = None) -> dict[str, float]:
+        """Stück je Papier, die Lotse selbst gekauft (minus verkauft) hat – nur aus gebuchten Ausführungen.
+        Mit `bis`: nur Ausführungen bis und mit diesem Tag (z.B. Zahltag einer Ausschüttung)."""
         out: dict[str, float] = {}
         for e in self._lies(self._ausfuehrungen):
+            if bis is not None and (e.get("ausgefuehrt") or e["zeit"])[:10] > bis.isoformat():
+                continue
             vorzeichen = 1 if e["seite"] == "KAUF" else -1
             out[e["papier"]] = out.get(e["papier"], 0.0) + vorzeichen * e["menge"]
         return {p: s for p, s in out.items() if abs(s) > 1e-12}

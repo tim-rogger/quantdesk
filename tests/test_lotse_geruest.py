@@ -340,3 +340,108 @@ def test_schlusskurs_aelter_als_ein_handelstag_stoppt_ueber_regel_0(tmp_path):
 def test_kein_kurs_ueber_beide_wege_stoppt_ueber_regel_0(tmp_path):
     ergebnis, push, ib = lauf_mit_historie(tmp_path, {"SSAC": [(GESTERN, 102.5)]})  # CSBGC7: nichts
     assert not ergebnis.ok and "Kurs von CSBGC7 fehlt" in ergebnis.text
+
+
+# ---------------------------------------------------------------- Ausschüttungen über Flex
+class FakeFlex:
+    zeilen = []
+    aufrufe = []
+
+    def __init__(self, token, query_id):
+        FakeFlex.aufrufe.append((token, query_id))
+
+    def extract(self, thema):
+        assert thema == "CashTransaction"
+        return list(FakeFlex.zeilen)
+
+
+def flex_zeile(art, symbol, betrag, wann="20261005;202000", waehrung="CHF", tid="T1"):
+    return NS(type=art, symbol=symbol, amount=betrag, dateTime=wann, currency=waehrung, transactionID=tid)
+
+
+def test_konto_liest_ausschuettungen_aus_flex():
+    FakeFlex.zeilen = [flex_zeile("Dividends", "CSBGC7", 4.0, tid="T1"),
+                       flex_zeile("Withholding Tax", "CSBGC7", -1.4, tid="T2"),
+                       flex_zeile("Deposits/Withdrawals", "", 500.0, tid="T3"),  # Einzahlung: keine Ausschüttung
+                       flex_zeile("Dividends", "AAPL", 3.0, waehrung="USD", tid="T4")]
+    k = Konto("h", 1, 27, "DUO844164", "EBS", "CHF", ib=FakeIB(), flex=FakeFlex)
+    gutschriften = k.dividenden("tok", "123")
+    assert [(g.id, g.papier, g.betrag, g.datum) for g in gutschriften] == [
+        ("T1", "CSBGC7", 4.0, dt.date(2026, 10, 5)), ("T2", "CSBGC7", -1.4, dt.date(2026, 10, 5))]
+
+
+def test_flex_fehler_wird_kontofehler():
+    class Kaputt:
+        def __init__(self, token, query_id):
+            raise RuntimeError("Token abgelaufen")
+
+    with pytest.raises(KontoFehler, match="Flex"):
+        Konto("h", 1, 27, "DUO844164", "EBS", "CHF", ib=FakeIB(), flex=Kaputt).dividenden("t", "q")
+
+
+def paper_lauf_mit_flex(tmp_path, monkeypatch, query_id="123", token="tok"):
+    if token:
+        monkeypatch.setenv("LOTSE_FLEX_TOKEN", token)
+    else:
+        monkeypatch.delenv("LOTSE_FLEX_TOKEN", raising=False)
+    cfg, text = lauf.lies_config()
+    cfg = {**cfg, "modus": "PAPER", "dividenden": {"flex_query_id": query_id}}
+    ib = FakeIB()
+    ib.pos = {"CSBGC7": 2.0}
+    ib.historie = {"SSAC": [(dt.date(2026, 10, 8), 102.5)], "CSBGC7": [(dt.date(2026, 10, 8), 98.7)]}
+    k = Konto("h", 1, 27, "DUO844164", "EBS", "CHF", ib=ib, flex=FakeFlex)
+    push = Push()
+    ergebnis = lauf.laufe(cfg, text, k, Tagebuch(str(tmp_path)), push, JETZT, handelstag=lambda d: dt.date(2026, 10, 8))
+    return ergebnis, push
+
+
+def eigene_csbgc7(tmp_path):
+    tb = Tagebuch(str(tmp_path))
+    ref = tb.notiere(0, 1, "CSBGC7", "KAUF", 200.0, 2.0, 100.0, JETZT)
+    tb.buche_ausfuehrung(ref, "E0", "CSBGC7", "KAUF", 2.0, 100.0, JETZT, gebuehr=0.0,
+                         ausgefuehrt=dt.datetime(2026, 9, 1, 10, 0))
+    return tb
+
+
+def test_lauf_bucht_ausschuettung_eigener_papiere(tmp_path, monkeypatch):
+    eigene_csbgc7(tmp_path)
+    FakeFlex.zeilen = [flex_zeile("Dividends", "CSBGC7", 4.0, tid="T1"),
+                       flex_zeile("Dividends", "NESN", 30.0, tid="T9")]  # gehört Lotse nicht
+    ergebnis, push = paper_lauf_mit_flex(tmp_path, monkeypatch)
+    tb = Tagebuch(str(tmp_path))
+    assert tb.dividenden() == pytest.approx(4.0) and tb.investiert() == pytest.approx(196.0)
+    assert "CSBGC7: Dividends +4.00 CHF gebucht (05.10.)" in push.gesendet[-1]["message"]
+
+
+def test_lauf_ohne_flex_meldet_dass_ausschuettungen_fehlen(tmp_path, monkeypatch):
+    eigene_csbgc7(tmp_path)
+    ergebnis, push = paper_lauf_mit_flex(tmp_path, monkeypatch, query_id="", token="")
+    assert "Ausschüttungen werden nicht erfasst" in push.gesendet[-1]["message"]
+
+
+# ---------------------------------------------------------------- Ohne Budget: Einzahlung bestätigen
+def lauf_ohne_budget(tmp_path, cash, bestaetigt=False):
+    cfg, text = lauf.lies_config()
+    cfg = {**cfg, "modus": "PAPER", "grenzen": {**cfg["grenzen"], "budget_chf": 0}}
+    ib = FakeIB()
+    ib.cash = cash
+    ib.historie = {"SSAC": [(dt.date(2026, 10, 8), 102.5)], "CSBGC7": [(dt.date(2026, 10, 8), 98.7)]}
+    push = Push()
+    ergebnis = lauf.laufe(cfg, text, konto(ib), Tagebuch(str(tmp_path)), push, JETZT,
+                          handelstag=lambda d: dt.date(2026, 10, 8), einzahlung_bestaetigt=bestaetigt)
+    return ergebnis, push, ib
+
+
+def test_ohne_budget_grosse_einzahlung_stoppt_bis_tim_bestaetigt(tmp_path):
+    ergebnis, push, ib = lauf_ohne_budget(tmp_path, 10_000.0)  # erster Lauf: alles gilt als Einzahlung
+    assert not ergebnis.ok and "Ungewöhnlich grosse Einzahlung" in ergebnis.text and ib.gesendet == []
+    assert push.gesendet[-1]["title"] == "Lotse – keine Order" and Tagebuch(str(tmp_path)).kasse_letzter_lauf() is None
+    ergebnis, push, ib = lauf_ohne_budget(tmp_path, 10_000.0, bestaetigt=True)
+    assert ergebnis.ok and len(ib.gesendet) == 1
+    assert Tagebuch(str(tmp_path)).kasse_letzter_lauf() == (10_000.0, 0.0)
+
+
+def test_ohne_budget_normale_einzahlung_wird_angelegt(tmp_path):
+    Tagebuch(str(tmp_path)).vermerke_kasse(1, 1000.0, 0.0, JETZT)
+    ergebnis, push, ib = lauf_ohne_budget(tmp_path, 1800.0)  # 800 eingezahlt
+    assert ergebnis.ok and len(ib.gesendet) == 1
