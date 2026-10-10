@@ -166,9 +166,14 @@ def test_echt_ist_gesperrt(tmp_path):
     assert push.gesendet[0]["title"] == "Lotse – keine Order"
 
 
-def test_paper_laeuft_bis_zur_logik(tmp_path):
-    ergebnis, push, ib = lauf_mit(tmp_path, "PAPER")  # Budget trennt Lotse von Bot C – PAPER ist offen
-    assert not ergebnis.ok and "Logik noch nicht fertig" in ergebnis.text and ib.gesendet == []
+def test_paper_ganzer_lauf_sendet_eine_day_order_im_budget(tmp_path):
+    # Konto: 10'000 CHF (gehört auch Bot C), Budget 300 → ein Kauf VWRL über 294 CHF
+    ergebnis, push, ib = lauf_mit(tmp_path, "PAPER")
+    assert ergebnis.ok and ergebnis.orders == 1
+    (symbol, order), = ib.gesendet
+    assert symbol == "VWRL" and order.action == "BUY" and order.tif == "DAY"
+    assert order.totalQuantity * order.lmtPrice <= 294.0 and order.lmtPrice > 155.3
+    assert Tagebuch(str(tmp_path)).zustaende() == {"lotse-1-1": "gesendet"}
 
 
 def test_offene_wertpapiere_stoppen_den_lauf(tmp_path):
@@ -176,10 +181,18 @@ def test_offene_wertpapiere_stoppen_den_lauf(tmp_path):
     assert not ergebnis.ok and "WERTPAPIERE.md" in ergebnis.text
 
 
-def test_solange_die_logik_fehlt_stoppt_der_lauf_mit_hinweis(tmp_path):
+def test_vorschlag_ganzer_lauf_mit_echter_logik(tmp_path):
     ergebnis, push, ib = lauf_mit(tmp_path)
-    assert not ergebnis.ok and "Logik noch nicht fertig" in ergebnis.text and "Tim" in ergebnis.text
-    assert ib.gesendet == [] and Tagebuch(str(tmp_path)).gesamt_letzter_lauf() is None
+    assert ergebnis.ok and ergebnis.orders == 1 and ib.gesendet == []  # VORSCHLAG: nichts an den Broker
+    assert "KAUF VWRL" in ergebnis.text and "(294.00 CHF)" in ergebnis.text
+    assert Tagebuch(str(tmp_path)).gesamt_letzter_lauf() == 10_000.0  # für Regel 12 gemerkt
+
+
+def test_fehlender_kurs_stoppt_den_ganzen_lauf(tmp_path):
+    ib = FakeIB()
+    ib.preise = {"VWRL": (155.3, 155.0, JETZT)}  # CHCORP ohne Kurs
+    ergebnis, push, ib = lauf_mit(tmp_path, "PAPER", ib=ib)
+    assert not ergebnis.ok and "CHCORP" in ergebnis.text and ib.gesendet == []
 
 
 def test_vorschlag_sendet_nichts_und_schreibt_ins_tagebuch(tmp_path, monkeypatch):
