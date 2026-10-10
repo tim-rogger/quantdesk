@@ -85,6 +85,10 @@ class Tagebuch:
                                      "modus": modus, "zieldatei": zieldatei})
         return nummer
 
+    def lauf_am(self, tag: dt.date) -> bool:
+        """Gab es an diesem Tag schon einen Lauf? (für den Zeitplan: nicht doppelt nachholen)"""
+        return any(e["ereignis"] == "start" and e["zeit"][:10] == tag.isoformat() for e in self._lies(self._laeufe))
+
     def lauf_ende(self, nummer: int, ergebnis: str, jetzt: dt.datetime, gesamt: float | None = None) -> None:
         self._schreib(self._laeufe, {"lauf": nummer, "ereignis": "ende", "zeit": jetzt.isoformat(),
                                      "ergebnis": ergebnis, "gesamt": gesamt})

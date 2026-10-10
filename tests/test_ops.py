@@ -205,7 +205,7 @@ def test_compose_hardening():
         assert "no-new-privileges:true" in svc["security_opt"], name
         assert svc["mem_limit"] == limits[name], name
         assert svc["logging"]["options"] == {"max-size": "10m", "max-file": "3"}, name
-        assert svc["restart"] == ("no" if name == "lotse" else "unless-stopped"), name  # Lotse: ein Lauf je Start
+        assert svc["restart"] == "unless-stopped", name
         for port in svc.get("ports", []):
             assert port.startswith("127.0.0.1:"), (name, port)
     assert "ports" not in d["services"]["ib-gateway"]

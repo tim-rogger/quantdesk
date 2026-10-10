@@ -128,16 +128,13 @@ services:
     depends_on:
       - bot
 
-  # Lotse – zweiter, eigenständiger Bot (Anlage nach fester Aufteilung). Teilt mit Bot C nur die Infrastruktur:
-  # eigener Container, eigener Ordner state-lotse/, eigenes ntfy-Thema "lotse", eigene TWS-Client-ID (config.toml).
-  # Profil "lotse": startet NICHT mit "docker compose up -d". Ein Lauf von Hand:
-  #   docker compose run --rm lotse
-  # Ein Zeitplan folgt erst, wenn Tim entschieden hat, wann Lotse läuft.
+  # Lotse – zweiter, eigenständiger Bot (Anlage nach fester Aufteilung). Eigener Container, eigener Ordner
+  # state-lotse/, eigenes ntfy-Thema "lotse", eigene TWS-Client-ID (config.toml).
+  # Zeitplan: täglich an SIX-Handelstagen 10:30 Zürich ([zeitplan] in lotse/config.toml).
+  # Ein Lauf von Hand: docker compose run --rm lotse python -m lotse.lauf
   lotse:
     <<: [*hardening, *quantdesk-image]
-    profiles: ["lotse"]
-    restart: "no"                      # ein Lauf, dann Schluss – nie in einer Schleife neu starten
-    command: ["python", "-m", "lotse.lauf"]
+    command: ["python", "-m", "lotse.zeitplan"]
     mem_limit: 256m
     read_only: true
     tmpfs:
