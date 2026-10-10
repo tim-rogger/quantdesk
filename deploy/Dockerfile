@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY quantdesk/ quantdesk/
 COPY dashboard/ dashboard/
+COPY lotse/ lotse/
 COPY data/universe.csv data/universe.csv
 COPY run_daily.py scheduler.py forward_test.py research.py backtest.py ./
 

@@ -41,8 +41,8 @@ chown "$OWNER_UID:$OWNER_GID" .env
 chmod 600 .env
 
 # --- Ordner
-mkdir -p state/data state/cache state/tws_settings ntfy-data secrets
-chown -R "$OWNER_UID:$OWNER_GID" state ntfy-data secrets
+mkdir -p state/data state/cache state/tws_settings state-lotse ntfy-data secrets
+chown -R "$OWNER_UID:$OWNER_GID" state state-lotse ntfy-data secrets
 chown -R "$GATEWAY_UID:$GATEWAY_UID" state/tws_settings
 chmod 700 secrets
 
