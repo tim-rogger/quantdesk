@@ -128,6 +128,31 @@ services:
     depends_on:
       - bot
 
+  # Lotse – zweiter, eigenständiger Bot (Anlage nach fester Aufteilung). Teilt mit Bot C nur die Infrastruktur:
+  # eigener Container, eigener Ordner state-lotse/, eigenes ntfy-Thema "lotse", eigene TWS-Client-ID (config.toml).
+  # Profil "lotse": startet NICHT mit "docker compose up -d". Ein Lauf von Hand:
+  #   docker compose run --rm lotse
+  # Ein Zeitplan folgt erst, wenn Tim entschieden hat, wann Lotse läuft.
+  lotse:
+    <<: [*hardening, *quantdesk-image]
+    profiles: ["lotse"]
+    restart: "no"                      # ein Lauf, dann Schluss – nie in einer Schleife neu starten
+    command: ["python", "-m", "lotse.lauf"]
+    mem_limit: 256m
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file: .env                     # NTFY_TOKEN
+    environment:
+      LOTSE_ORDNER: /state-lotse
+      NTFY_URL: http://ntfy:80
+      HOME: /tmp
+    volumes:
+      - ./state-lotse:/state-lotse
+    depends_on:
+      - ib-gateway
+      - ntfy
+
 # Secret-Dateien müssen existieren, sonst startet nichts – prepare.sh legt fehlende leer an (mit Warnung).
 # tws_password.txt: Besitzer UID 1000 (IB Gateway), Modus 400. Die beiden Backup-Secrets: deine UID, Modus 400.
 secrets:

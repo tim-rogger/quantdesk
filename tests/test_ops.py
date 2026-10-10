@@ -200,23 +200,23 @@ def test_missing_own_shares_stop_trading_the_symbol(tmp_path):
 # ====================================================================== Compose-Härtung
 def test_compose_hardening():
     d = yaml.safe_load((ROOT / "deploy" / "docker-compose.yml").read_text(encoding="utf-8"))
-    limits = {"ib-gateway": "1536m", "bot": "512m", "dashboard": "256m", "ntfy": "128m"}
+    limits = {"ib-gateway": "1536m", "bot": "512m", "dashboard": "256m", "ntfy": "128m", "lotse": "256m"}
     for name, svc in d["services"].items():
         assert "no-new-privileges:true" in svc["security_opt"], name
         assert svc["mem_limit"] == limits[name], name
         assert svc["logging"]["options"] == {"max-size": "10m", "max-file": "3"}, name
-        assert svc["restart"] == "unless-stopped", name
+        assert svc["restart"] == ("no" if name == "lotse" else "unless-stopped"), name  # Lotse: ein Lauf je Start
         for port in svc.get("ports", []):
             assert port.startswith("127.0.0.1:"), (name, port)
     assert "ports" not in d["services"]["ib-gateway"]
-    for name in ("dashboard", "ntfy", "bot"):
+    for name in ("dashboard", "ntfy", "bot", "lotse"):
         assert d["services"][name]["read_only"] is True and "/tmp" in d["services"][name]["tmpfs"]
     assert re.fullmatch(r"binwiederhier/ntfy:v\d+\.\d+\.\d+", d["services"]["ntfy"]["image"])
     gw = d["services"]["ib-gateway"]["environment"]
     assert gw["TRADING_MODE"] == "paper" and "BYPASS_WARNING" not in gw and "TWS_PASSWORD" not in gw
     assert set(d["secrets"]) == {"tws_password", "restic_password", "b2_account_key"}
     # beide eigenen Dienste bauen das Image selbst (nie von Docker Hub pullen) und laufen mit Tims UID
-    for name in ("bot", "dashboard"):
+    for name in ("bot", "dashboard", "lotse"):
         svc = d["services"][name]
         assert svc["build"]["dockerfile"] == "deploy/Dockerfile" and svc["image"] == "quantdesk:latest", name
         assert svc["user"] == "${QUANTDESK_UID:-1000}:${QUANTDESK_GID:-1000}", name

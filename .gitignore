@@ -10,6 +10,8 @@ data/STOP
 deploy/.env
 deploy/secrets/
 deploy/state/
+deploy/state-lotse/
+lotse-daten/
 deploy/ntfy-data/
 
 # Python
