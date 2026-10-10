@@ -39,7 +39,9 @@ flex_query_id = ""
 pro_order = 3                 # CHF je Order
 
 [ausfuehren]
-limit_abstand_prozent = 0.5   # Regel 20: Limit so viel über (Kauf) bzw. unter (Verkauf) dem letzten Kurs
+limit_abstand_prozent = 1.5   # Regel 20: Limit so viel über (Kauf) bzw. unter (Verkauf) dem letzten Kurs.
+                              # Ein Kauf-Limit über dem Markt füllt zum Briefkurs, nicht zum Limit – der Abstand kostet
+                              # im Normalfall nichts, deckt Kursbewegungen seit dem letzten Kurs ab und fängt grobe Fehler ab.
 bruchstueck_stellen   = 4     # Nachkommastellen bei Stück (IBKR erlaubt Bruchstücke für SIX-ETFs; 0 = nur ganze)
 
 [kurse]
@@ -60,6 +62,14 @@ client_id = 27
 konto     = "DUO844164"       # muss mit DU beginnen (nur Paper)
 boerse    = "EBS"             # SIX Swiss Exchange bei IBKR
 waehrung  = "CHF"
+
+[zeitplan]
+# Täglich an SIX-Handelstagen (Börsenkalender XSWX, ohne Feiertage). Eine nicht ausgeführte Order wird so am
+# nächsten Tag neu gestellt, Einzahlungen werden innert eines Tages erkannt. Gehandelt wird trotzdem selten (Regel 9).
+uhrzeit              = "10:30"
+zeitzone             = "Europe/Zurich"
+nachholen_bis        = "17:00"   # Container startet erst später (Neustart)? Heutigen Lauf bis dann nachholen
+lauf_timeout_minuten = 20
 
 [push]
 thema = "lotse"               # eigenes ntfy-Thema; Adresse und Token kommen aus der Umgebung (NTFY_URL, NTFY_TOKEN)
