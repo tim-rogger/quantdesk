@@ -270,6 +270,30 @@ Danach pingt der Bot nach jedem erfolgreichen 10:00-Lauf. Bei einem Fehler melde
 US-Feiertagen schickt er ein „kein Handelstag“. Bleibt der Ping bis 11:00 New York aus, alarmiert Healthchecks.io.
 Zusätzlich schickt der Server selbst um 11:00 New York einen Push, wenn der Handelslauf nicht geklappt hat.
 
+## 12. Systemseite (/system): zeigt, ob alles läuft
+
+Eine zweite Seite im Dashboard: deine Infrastruktur als Skizze, jeder Kasten grün, gelb, rot oder grau
+(grau = noch nicht eingerichtet). Die Daten sammelt ein kleiner Dienst **auf dem Server selbst**, nicht im
+Dashboard-Container. Das Dashboard liest nur die Datei, die er schreibt (`state/system/system.json`). Die Seite
+hat **keine Knöpfe**. Neu starten machst du weiterhin im Terminal.
+
+Einmalig einrichten (nach `git pull`):
+```bash
+$ cd ~/quantdesk/deploy
+$ sudo ./prepare.sh                                    # legt state/system/ an
+$ cd ~/quantdesk && sudo python3 -m systemstatus --einmal   # Probelauf: zeigt jeden Kasten mit Farbe
+$ sudo cp deploy/systemstatus.service /etc/systemd/system/quantdesk-systemstatus.service
+$ sudo systemctl daemon-reload && sudo systemctl enable --now quantdesk-systemstatus
+$ cd deploy && docker compose up -d                    # Dashboard bekommt den neuen (nur lesenden) Ordner
+```
+Ansehen: `https://quantdesk.dein-tailnet.ts.net/system` (oder im Dashboard oben rechts auf **System ›**).
+
+- Läuft der Sammler? `systemctl status quantdesk-systemstatus`, Meldungen: `journalctl -u quantdesk-systemstatus -n 50`
+- Seite grau abgeblendet mit „Daten veraltet“ → der Sammler schreibt nicht mehr. `sudo systemctl restart quantdesk-systemstatus`
+- Neuer Bot → einen `[[bot]]`-Eintrag in `deploy/bots.toml`, keine Codeänderung. Der Sammler liest die Datei bei
+  jeder Messung neu.
+- Nach einem Update des Sammlers (`git pull`): `sudo systemctl restart quantdesk-systemstatus`
+
 ---
 
 ## Einmalig: Update nach dem ersten Server-Lauf (08.10.2026)

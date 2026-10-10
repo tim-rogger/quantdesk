@@ -16,7 +16,7 @@ const FARBE = {
 };
 const SYMBOL = { gruen: "✓", gelb: "!", rot: "✕", grau: "–" };
 const STUFE_TEXT = { gruen: "grün – läuft", gelb: "gelb – stimmt etwas nicht", rot: "rot – aus oder nicht erreichbar",
-  grau: "grau – noch nicht eingerichtet (kein Fehler)" };
+  grau: "grau – kein Fehler" };
 
 let daten = null;        // zuletzt erfolgreich geladene system.json
 let ladeFehler = "";     // Text, falls das Dashboard gerade nicht antwortet
@@ -62,7 +62,7 @@ function plaetze(kaesten) {
     "c-dashboard": { x: RECHTS + 6, y: 270, w: B - 12, h: 50 },
     "c-bot": { x: LINKS + 6, y: 330, w: B - 12, h: 50 },
     "c-ib-gateway": { x: RECHTS + 6, y: 330, w: B - 12, h: 50 },
-    "tws-api": { x: RECHTS + 12, y: 416, w: B - 24, h: 44, rund: true },
+    "tws-api": { x: RECHTS, y: 416, w: B, h: 44, rund: true },
     ibkr: { x: RECHTS, y: 490, w: B, h: 58 },
   };
   let y = 416;
@@ -85,8 +85,9 @@ function svgEl(tag, attrs = {}, text = "") {
   return e;
 }
 
-function kuerzen(text, platz, schrift) {
-  const max = Math.floor(platz / (schrift * 0.56));
+// Text kürzen, damit er in den Kasten passt. Ein Zeichen ist im Mittel etwa eine halbe Schriftgrösse breit.
+function kuerzen(text, platz, schrift, fett = false) {
+  const max = Math.floor(platz / (schrift * (fett ? 0.55 : 0.5)));
   text = String(text ?? "");
   return text.length > max ? text.slice(0, max - 1) + "…" : text;
 }
@@ -113,23 +114,23 @@ function zeichneKasten(svg, k, p) {
     stroke: f.linie, "stroke-dasharray": k.stufe === "grau" ? "3 2" : "none" }));
   a.appendChild(svgEl("text", { x: links + 8, y: p.y + 23, "text-anchor": "middle", "font-size": 11, "font-weight": 700,
     fill: k.stufe === "grau" ? f.linie : "#0d1117" }, SYMBOL[k.stufe] || "?"));
-  let titelPlatz = p.w - (links - p.x) - 30;
-  if (k.modus) {
-    const breite = String(k.modus).length * 7 + 12;
-    titelPlatz -= breite + 4;
-    const farbe = { paper: ["#3d2a00", "#d29922"], echt: ["#f85149", "#ffffff"], probe: ["#12304d", "#58a6ff"] }[modusKlasse(k.modus)];
-    a.appendChild(svgEl("rect", { x: p.x + p.w - breite - 8, y: p.y + 9, width: breite, height: 18, rx: 9, fill: farbe[0] }));
-    a.appendChild(svgEl("text", { x: p.x + p.w - breite / 2 - 8, y: p.y + 22, "text-anchor": "middle", "font-size": 10,
-      "font-weight": 700, fill: farbe[1] }, k.modus));
-  }
   a.appendChild(svgEl("text", { x: links + 22, y: p.y + 23, "font-size": 13, "font-weight": 600, fill: "#e6edf3" },
-    kuerzen(k.titel, titelPlatz, 13)));
+    kuerzen(k.kurztitel || k.titel, p.w - (links - p.x) - 30, 13, true)));
   a.appendChild(svgEl("text", { x: links, y: p.y + 41, "font-size": 11.5, fill: k.stufe === "rot" ? "#ff9b95" : "#adbac7" },
     kuerzen(k.kurz, p.w - (links - p.x) * 2, 11.5)));
+  // Bots: dritte Zeile mit dem letzten Lauf, rechts davon der Modus (PAPER, DRY_RUN, …) als Abzeichen
+  let modusBreite = 0;
+  if (k.modus && p.h >= 60) {
+    modusBreite = String(k.modus).length * 6.5 + 12;
+    const farbe = { paper: ["#3d2a00", "#d29922"], echt: ["#f85149", "#ffffff"], probe: ["#12304d", "#58a6ff"] }[modusKlasse(k.modus)];
+    a.appendChild(svgEl("rect", { x: p.x + p.w - modusBreite - 8, y: p.y + 45, width: modusBreite, height: 16, rx: 8, fill: farbe[0] }));
+    a.appendChild(svgEl("text", { x: p.x + p.w - modusBreite / 2 - 8, y: p.y + 57, "text-anchor": "middle", "font-size": 10,
+      "font-weight": 700, fill: farbe[1] }, k.modus));
+  }
   if (k.letzter_lauf && p.h >= 60) {
     const ergebnis = k.lauf_ok === false ? "gescheitert" : "ok";
     a.appendChild(svgEl("text", { x: links, y: p.y + 57, "font-size": 11, fill: "#8b949e" },
-      kuerzen(`Lauf ${relativ(k.letzter_lauf)} · ${ergebnis}`, p.w - 20, 11)));
+      kuerzen(`${relativ(k.letzter_lauf)} · ${ergebnis}`, p.w - (links - p.x) - modusBreite - 14, 11)));
   }
   svg.appendChild(a);
 }
@@ -176,7 +177,8 @@ function karte(k) {
   h.appendChild(el("span", {}, k.titel));
   if (k.modus) h.appendChild(el("span", { class: `modus ${modusKlasse(k.modus)}` }, k.modus));
   art.appendChild(h);
-  art.appendChild(el("p", { class: "stufe" }, STUFE_TEXT[k.stufe] || k.stufe));
+  // grau hat verschiedene Gründe ("noch nicht eingerichtet", "offline – kein Fehler") – den echten zeigen
+  art.appendChild(el("p", { class: "stufe" }, k.stufe === "grau" ? `grau – ${k.kurz}` : STUFE_TEXT[k.stufe] || k.stufe));
   if (k.gruende && k.gruende.length) {
     const ul = el("ul", { class: "gruende" });
     k.gruende.forEach((g) => ul.appendChild(el("li", {}, g)));

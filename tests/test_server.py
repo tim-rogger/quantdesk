@@ -274,6 +274,40 @@ def test_dashboard_status_and_static(tmp_path, monkeypatch):
     assert client.get("/static/app.js").status_code == 200
 
 
+def test_dashboard_masks_account_everywhere(tmp_path, monkeypatch):
+    """Die Seite wird fotografiert: die volle Kontonummer darf nirgends in der Antwort stehen."""
+    s = settings_for(tmp_path, monkeypatch)
+    client = TestClient(create_app(s, Notifier()))
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "status.json").write_text(json.dumps({
+        "mode": "PAPER", "account_id": "DUO844164", "systems": [],
+        "events": [{"ts": 1, "level": "error", "message": "IBKR_ACCOUNT_ID 'U7654321' ist kein Paper-Konto"}]}),
+        encoding="utf-8")
+    r = client.get("/api/status")
+    assert "DUO844164" not in r.text and "U7654321" not in r.text
+    data = r.json()
+    assert data["account_id"] == "DU…164" and "U…321" in data["events"][0]["message"]
+    assert data["mode"] == "PAPER" and data["invalid_numbers"] == []
+
+
+def test_dashboard_survives_nan_in_status(tmp_path, monkeypatch):
+    """nan/inf im status.json führte zu Fehler 500 – die Seite war blind, genau wenn etwas kaputt ist."""
+    s = settings_for(tmp_path, monkeypatch)
+    client = TestClient(create_app(s, Notifier()))
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "status.json").write_text(
+        '{"mode": "PAPER", "c_account": {"invested": NaN, "value": Infinity}, "systems": [{"bot_qty": 1.8e308}]}',
+        encoding="utf-8")
+    r = client.get("/api/status")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["c_account"] == {"invested": None, "value": None} and data["systems"][0]["bot_qty"] is None
+    assert data["invalid_numbers"] == ["c_account.invested", "c_account.value", "systems[0].bot_qty"]
+    (tmp_path / "data" / "status.json").write_text('{"mode": "PAP', encoding="utf-8")  # kaputt
+    r = client.get("/api/status")
+    assert r.status_code == 200 and r.json()["missing"] is True
+
+
 def test_dashboard_stop_all_needs_pin(tmp_path, monkeypatch):
     s = settings_for(tmp_path, monkeypatch)
     push = Notifier()

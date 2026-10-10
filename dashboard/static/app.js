@@ -67,7 +67,7 @@ function drawChart(curves) {
 
 function render(data) {
   if (data.missing) {
-    $("subtitle").textContent = "Noch kein Lauf – status.json fehlt.";
+    $("subtitle").textContent = data.error || "Noch kein Lauf – status.json fehlt.";
     return;
   }
   const mode = $("mode");
@@ -96,6 +96,13 @@ function render(data) {
   const errs = last && last.errors && last.errors.length ? last.errors : [];
   $("error-banner").hidden = !errs.length;
   $("error-banner").textContent = errs.length ? `Letzter Lauf: ${errs[0]}${errs.length > 1 ? ` (+${errs.length - 1})` : ""}` : "";
+  // nan/inf im Status: der Server hat sie durch null ersetzt (sonst Fehler 500) – hier sichtbar machen, nicht verstecken
+  const bad = data.invalid_numbers || [];
+  if (bad.length) {
+    $("error-banner").hidden = false;
+    $("error-banner").textContent = `Ungültige Zahlen im Status (nan/inf): ${bad.join(", ")}` +
+      (errs.length ? ` · Letzter Lauf: ${errs[0]}` : "");
+  }
 
   drawChart(curvesFrom(data));
 
