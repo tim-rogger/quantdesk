@@ -43,15 +43,14 @@ limit_abstand_prozent = 0.5   # Regel 20: Limit so viel über (Kauf) bzw. unter 
 bruchstueck_stellen   = 4     # Nachkommastellen bei Stück (IBKR erlaubt Bruchstücke für SIX-ETFs; 0 = nur ganze)
 
 [kurse]
-# Woher Lotse die Kurse nimmt. "yahoo" (Standard): letzter Schlusskurs von Yahoo, kein IBKR-Marktdaten-Abo nötig.
-# "ibkr": über das IB Gateway – für die SIX braucht das ein Marktdaten-Abo. Orders laufen in beiden Fällen über IBKR.
-# Kein automatischer Wechsel zwischen den Quellen.
-quelle = "yahoo"
+# Kurse holt Lotse über quantdesk.marketdata (wie Bot C), ohne IBKR – die SIX liefert ohne Marktdaten-Abo keine
+# Kurse. Reihenfolge der Quellen: Stooq, dann Yahoo. Je Papier das Symbol pro Quelle; "" = Quelle überspringen.
+# Stooq nennt keine Währung (-> Regel 0) und ist oft blockiert, deshalb für die SIX-Papiere abgeschaltet.
+# Orders laufen immer über IBKR an der SIX (EBS).
 
 [kurse.symbole]
-# Börsenkürzel bei IBKR -> Kurs-Symbol bei Yahoo (SIX = Endung .SW). Jedes Papier aus [wertpapiere] und [abbau].
-SSAC   = "SSAC.SW"
-CSBGC7 = "CSBGC7.SW"
+SSAC   = { yahoo = "SSAC.SW", stooq = "" }
+CSBGC7 = { yahoo = "CSBGC7.SW", stooq = "" }
 
 [verbindung]
 # IB Gateway (Paper). Bot C benutzt Client-ID 17 – Lotse eine eigene.

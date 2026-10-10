@@ -1,6 +1,9 @@
 """Test-Doubles für Lotse: ein Nachbau der benutzten ib_async-Schnittstelle (kein Netzwerk, kein Gateway)."""
 import datetime as dt
+import math
 from types import SimpleNamespace as NS
+
+from quantdesk.marketdata import Quote
 
 UNSET_DOUBLE = 1.7976931348623157e308  # = ib_async.util.UNSET_DOUBLE
 
@@ -11,12 +14,7 @@ class FakeIB:
         self.verbunden = False
         self.cash = 10_000.0
         self.pos = {}  # Symbol -> Stück
-        self.preise = {}  # Symbol -> (last, close, zeit) für die verzögerte Live-Abfrage
-        self.historie = {}  # Symbol -> [(datum, schluss), ...] für reqHistoricalData (kein Abo nötig)
-        self.historie_fehler = False
-        self.historie_aufrufe = []
-        self.ticker_aufrufe = []
-        self.md_typen = []
+        self.preise = {}  # Symbol -> (last, close, zeit): Preisbuch für die eingesetzte Kursquelle (Preisbuch)
         self.offen = []  # Trades
         self.fills = []
         self.gesendet = []
@@ -38,7 +36,7 @@ class FakeIB:
         return self.konten
 
     def reqMarketDataType(self, typ):
-        self.md_typen.append(typ)
+        pass
 
     def sleep(self, s=0):
         pass
@@ -56,18 +54,6 @@ class FakeIB:
 
     def positions(self, konto=""):
         return [NS(contract=NS(symbol=s), position=q) for s, q in self.pos.items()]
-
-    def reqHistoricalData(self, vertrag, endDateTime, durationStr, barSizeSetting, whatToShow, useRTH,
-                          formatDate=1):
-        self.historie_aufrufe.append((vertrag.symbol, durationStr, barSizeSetting, whatToShow, useRTH))
-        if self.historie_fehler:
-            raise TimeoutError("historische Daten: Zeitüberschreitung (Test)")
-        return [NS(date=d, close=c) for d, c in self.historie.get(vertrag.symbol, [])]  # IBKR 354/162: leer
-
-    def reqTickers(self, vertrag):
-        self.ticker_aufrufe.append(vertrag.symbol)
-        last, close, zeit = self.preise.get(vertrag.symbol, (float("nan"), float("nan"), None))
-        return [NS(last=last, close=close, time=zeit)]
 
     def reqAllOpenOrders(self):
         return list(self.offen)
@@ -101,3 +87,29 @@ class FakeIB:
         self.fills.append(NS(contract=NS(symbol=symbol), commissionReport=bericht,
                              execution=NS(execId=exec_id, orderRef=ref, side=seite, shares=menge, price=preis,
                                           time=dt.datetime(2026, 10, 9, 10, 0))))
+
+
+# Kurs-Symbole für die Tests (wie [kurse.symbole] in config.toml)
+KURSE_TEST = {"symbole": {p: {"yahoo": f"{p}.SW", "stooq": ""} for p in ("VWRL", "CHCORP", "SSAC", "CSBGC7")}}
+
+
+class Preisbuch:
+    """Eingesetzte Kursquelle mit der Schnittstelle von quantdesk.marketdata.MarketData (get_quote) – ohne Netz.
+    Liest die Kurse aus FakeIB.preise; Quelle und Währung lassen sich je Symbol vorgeben."""
+
+    def __init__(self, ib, quelle="Yahoo", waehrung="CHF", abweichend=None):
+        self.ib, self.quelle, self.waehrung = ib, quelle, waehrung
+        self.abweichend = abweichend or {}  # Symbol -> (Quelle, Währung)
+        self.gefragt = []
+
+    def get_quote(self, symbol):
+        self.gefragt.append(symbol)
+        if symbol not in self.ib.preise:
+            return None
+        last, close, zeit = self.ib.preise[symbol]
+        wert = last if isinstance(last, float) and math.isfinite(last) else close
+        if not isinstance(wert, float) or not math.isfinite(wert):
+            return None
+        quelle, waehrung = self.abweichend.get(symbol, (self.quelle, self.waehrung))
+        datum = zeit.date() if isinstance(zeit, dt.datetime) else zeit
+        return Quote(symbol, wert, quelle, datum, waehrung)

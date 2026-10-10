@@ -26,7 +26,6 @@ from dataclasses import dataclass
 
 from lotse import logik
 from lotse.konto import Konto, KontoFehler
-from lotse.kurse import YahooKurse
 from lotse.push import Push
 from lotse.tagebuch import AUSGEFUEHRT, GESENDET, STORNIERT, VERWORFEN, VORSCHLAG, Tagebuch
 
@@ -34,7 +33,6 @@ log = logging.getLogger("lotse")
 CONFIG = os.path.join(os.path.dirname(__file__), "config.toml")
 MODI = ("VORSCHLAG", "PAPER", "ECHT")
 OFFEN = "TODO"
-KURSQUELLEN = ("yahoo", "ibkr")
 BOERSE_KALENDER = "XSWX"  # SIX Swiss Exchange
 
 
@@ -72,15 +70,11 @@ def pruefe_config(cfg: dict) -> list[str]:
         probleme.append("In [ziel], [grenzen], [gebuehren] und [ausfuehren] stehen nur Zahlen")
     if not all(isinstance(p, str) for p in cfg["abbau"].get("liste", [])):
         probleme.append("[abbau] liste enthält nur Börsenkürzel als Text")
-    quelle = cfg["kurse"].get("quelle")
-    if quelle not in KURSQUELLEN:
-        probleme.append(f"[kurse] quelle muss einer von {KURSQUELLEN} sein, ist {quelle!r}")
-    elif quelle == "yahoo":
-        symbole = cfg["kurse"].get("symbole", {})
-        papiere = [p for p in cfg["wertpapiere"].values() if p != OFFEN] + list(cfg["abbau"].get("liste", []))
-        fehlend = [p for p in papiere if not symbole.get(p)]
-        if fehlend:
-            probleme.append(f"[kurse.symbole] fehlt für: {', '.join(fehlend)}")
+    symbole = cfg["kurse"].get("symbole", {})
+    papiere = [p for p in cfg["wertpapiere"].values() if p != OFFEN] + list(cfg["abbau"].get("liste", []))
+    fehlend = [p for p in papiere if not isinstance(symbole.get(p), dict) or not any(symbole[p].values())]
+    if fehlend:
+        probleme.append(f"[kurse.symbole] fehlt für: {', '.join(fehlend)} (z.B. SSAC = {{ yahoo = \"SSAC.SW\" }})")
     return probleme
 
 
@@ -158,28 +152,23 @@ def erfasse_dividenden(cfg: dict, konto: Konto, tagebuch: Tagebuch, jetzt: dt.da
 
 
 # --------------------------------------------------------------------------- Kurse (Regel 2)
-def hole_kurse(cfg: dict, konto: Konto, papiere: list[str], kursquelle) -> tuple[dict, dict[str, str], list[str]]:
-    """Kurse je Papier aus der Quelle laut config.toml. Liefert (Kurse, Quelle je Papier, Probleme).
-    Ein Kurs in einer anderen Währung als das Konto ist ein Problem (Regel 0) – es wird nie umgerechnet."""
-    if cfg["kurse"]["quelle"] == "ibkr":
-        return konto.kurse(papiere), dict(konto.kursquellen), []
+def hole_kurse(cfg: dict, konto: Konto, papiere: list[str]) -> tuple[dict, dict, list[str]]:
+    """Kurse je Papier über das Konto (quantdesk.marketdata). Liefert (Kurse für logik, Meldungen, Probleme).
+    Ein Kurs in einer anderen oder unbekannten Währung als das Konto ist ein Problem (Regel 0) – nie umrechnen."""
     waehrung = cfg["verbindung"]["waehrung"]
-    kurse, quellen, probleme = {}, {}, []
-    for papier in papiere:
-        symbol = cfg["kurse"]["symbole"][papier]
-        n = kursquelle.notierung(symbol)
-        if n.wert is not None and n.waehrung != waehrung:
-            probleme.append(f"Kurs von {papier} ({symbol}) ist in {n.waehrung or 'unbekannter Währung'} statt "
+    meldungen = konto.kurse(papiere)
+    kurse, probleme = {}, []
+    for papier, m in meldungen.items():
+        if m.wert is not None and m.waehrung != waehrung:
+            probleme.append(f"Kurs von {papier} ({m.quelle}) ist in {m.waehrung or 'unbekannter Währung'} statt "
                             f"{waehrung} – wird nicht umgerechnet")
-        kurse[papier] = logik.Kurs(n.wert, n.datum)
-        if n.wert is not None:
-            quellen[papier] = f"Yahoo {symbol}"
-    return kurse, quellen, probleme
+        kurse[papier] = logik.Kurs(m.wert, m.datum)
+    return kurse, meldungen, probleme
 
 
 # --------------------------------------------------------------------------- der Lauf
 def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Push, jetzt: dt.datetime,
-          handelstag=letzter_handelstag, einzahlung_bestaetigt: bool = False, kursquelle=None) -> Ergebnis:
+          handelstag=letzter_handelstag, einzahlung_bestaetigt: bool = False) -> Ergebnis:
     probleme = pruefe_config(cfg)
     if probleme:
         return _stopp(push, "Zieldatei unvollständig: " + "; ".join(probleme))
@@ -206,7 +195,8 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
         papiere = list(e.ziel) + [p for p in e.abbau if p not in e.ziel]
         heute_betrag, heute_orders = tagebuch.heute(jetzt.date())
         kasse = tagebuch.kasse_letzter_lauf()
-        kurse, quellen, kursprobleme = hole_kurse(cfg, konto, papiere, kursquelle or YahooKurse())
+        kurse, meldungen, kursprobleme = hole_kurse(cfg, konto, papiere)
+        tagebuch.vermerke_kurse(nummer, meldungen, jetzt)  # Regel 2: Kurs, Datum, Währung, Quelle
         lage = logik.Lage(cash=konto.cash(), stueck=konto.positionen(), eigene_stueck=tagebuch.eigene_stueck(),
                           kurse=kurse, letzter_handelstag=handelstag(jetzt.date()),
                           mindestdepot_erreicht=tagebuch.mindestdepot_erreicht(), heute_betrag=heute_betrag,
@@ -220,8 +210,8 @@ def laufe(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Pus
         hinweise.append(f"{len(offene)} offene Lotse-Order(s) beim Broker (im VORSCHLAG nicht storniert)")
     if kursprobleme:  # Regel 0: falsche Währung
         return _ende(tagebuch, nummer, jetzt, _stopp(push, "; ".join(kursprobleme)))
-    if quellen:
-        hinweise.append("Kurse: " + ", ".join(f"{p} {q} ({_tag(lage.kurse[p].datum)})" for p, q in quellen.items()))
+    hinweise.append("Kurse: " + ", ".join(f"{p} {m.wert:.2f} {m.waehrung} von {m.quelle} ({_tag(m.datum)})"
+                                          for p, m in meldungen.items() if m.wert is not None))
 
     try:
         plan = logik.plane(lage, e)  # Regel 0, 5–18 (Tim)
@@ -298,8 +288,12 @@ def main(argv: list[str] | None = None) -> int:
     cfg, text = lies_config(args.config)
     v = cfg.get("verbindung", {})
     push = Push.aus_umgebung(cfg.get("push", {}).get("thema", "lotse"))
+    from quantdesk.marketdata import MarketData
+
+    marktdaten = MarketData(broker=None, symbole=cfg.get("kurse", {}).get("symbole", {}))
     try:
-        konto = Konto(v["host"], int(v["port"]), int(v["client_id"]), v["konto"], v["boerse"], v["waehrung"])
+        konto = Konto(v["host"], int(v["port"]), int(v["client_id"]), v["konto"], v["boerse"], v["waehrung"],
+                      marktdaten=marktdaten)
     except (KeyError, KontoFehler) as fehler:
         print(f"Verbindung: {fehler}", file=sys.stderr)
         return 1

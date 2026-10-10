@@ -5,7 +5,6 @@ Test bei Tim rot. In der CI (GitHub Actions setzt CI=true) gilt so ein Test als 
 damit die übrigen Tests weiter zählen. Ist die Regel geschrieben, läuft der Test überall normal (grün oder rot).
 """
 import os
-from types import SimpleNamespace
 
 import pytest
 import requests
@@ -22,12 +21,13 @@ def pytest_runtest_makereport(item, call):
 
 
 @pytest.fixture(autouse=True)
-def kein_netz_fuer_lotse_kurse(monkeypatch):
-    """Lotse: Kein Test darf Yahoo im Netz abfragen – Tests setzen eine eigene Kursquelle ein."""
-    import lotse.kurse
+def kein_netz_fuer_kurse(monkeypatch):
+    """Kein Test darf Kurse im Netz abfragen: quantdesk.marketdata bekommt ohne eigene Session eine gesperrte.
+    (Tests mit eigener Session – z.B. test_data_sources – sind davon nicht betroffen.)"""
+    import quantdesk.marketdata
 
-    def gesperrt(*args, **kwargs):
-        raise AssertionError("Netzzugriff im Test: Kursquelle einsetzen (kursquelle=...)")
+    class GesperrteSession:
+        def get(self, *args, **kwargs):
+            raise requests.ConnectionError("Netzzugriff im Test gesperrt – Kursquelle einsetzen")
 
-    monkeypatch.setattr(lotse.kurse, "requests", SimpleNamespace(get=gesperrt,
-                                                                 RequestException=requests.RequestException))
+    monkeypatch.setattr(quantdesk.marketdata.requests, "Session", GesperrteSession)

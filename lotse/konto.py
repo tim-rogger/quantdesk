@@ -1,5 +1,7 @@
-"""Lotse – Verbindung zu IBKR (IB Gateway, TWS-API über ib_async): Cash, Positionen, offene Orders, Kurse,
-Orders senden und stornieren. Nur Paper-Konten (DU…). Kein Code von Bot C – eigene, kleine Umsetzung.
+"""Lotse – Verbindung zu IBKR (IB Gateway, TWS-API über ib_async): Cash, Positionen, offene Orders,
+Orders senden und stornieren. Nur Paper-Konten (DU…).
+Kurse kommen nicht von IBKR (die SIX liefert ohne Marktdaten-Abo keine), sondern über quantdesk.marketdata –
+dieselbe Kursabfrage wie Bot C (Stooq, Yahoo), mit dem Symbol-Mapping aus config.toml.
 
 Wichtig (Lehre aus Bot C): ib_async füllt fehlende Zahlen mit Platzhaltern (UNSET_DOUBLE = 1.8e308,
 UNSET_INTEGER = 2147483647). Solche Werte gelten hier als "nicht vorhanden" (None) und werden nie
@@ -11,13 +13,10 @@ import datetime as dt
 import math
 from dataclasses import dataclass
 
-from lotse.logik import KAUF, VERKAUF, Kurs
+from lotse.logik import KAUF, VERKAUF
 from lotse.tagebuch import REF_PREFIX
 
 PAPER_PREFIX = "DU"
-HISTORISCH = "historisch"  # letzter Tages-Schlusskurs aus reqHistoricalData – braucht kein Marktdaten-Abo
-VERZOEGERT = "verzögert"  # Fallback: Live-Abfrage mit verzögerten Daten (reqMarketDataType 3)
-HISTORIE_ZEITRAUM = "1 W"  # Tagesbalken der letzten Woche: der letzte ist der jüngste Schlusskurs (auch nach Feiertagen)
 PLATZHALTER_AB = 1e300  # ab hier ist eine Zahl ein ib_async-Platzhalter
 GUELTIGKEIT = "DAY"  # Regel 20: nur bis Handelsschluss, nie GTC
 
@@ -65,6 +64,15 @@ DIVIDENDEN_ARTEN = ("Dividends", "Payment In Lieu Of Dividends", "Withholding Ta
 
 
 @dataclass(frozen=True)
+class Kursmeldung:
+    """Ein Kurs, wie die Kursquelle ihn meldet: Wert, Handelstag, Währung und Quelle ("Yahoo", "Stooq")."""
+    wert: float | None
+    datum: dt.date | None
+    waehrung: str | None
+    quelle: str | None
+
+
+@dataclass(frozen=True)
 class Gutschrift:
     """Eine Ausschüttung oder die Quellensteuer darauf (negativ), aus der IBKR Flex-Abfrage."""
     id: str
@@ -83,12 +91,6 @@ def _als_datum(wert) -> dt.date | None:
     if isinstance(wert, str) and len(wert) >= 8 and wert[:8].isdigit():
         return dt.date(int(wert[:4]), int(wert[4:6]), int(wert[6:8]))
     return None
-
-
-def _kurs_oder_none(wert) -> float | None:
-    """ib_async meldet einen fehlenden Kurs als nan – das heisst hier "kein Kurs" (None)."""
-    zahl = echte_zahl(wert)
-    return None if zahl is None or math.isnan(zahl) else zahl
 
 
 def auf_tick(limit: float, tick: float | None, seite: str) -> float:
@@ -116,7 +118,7 @@ def _seite(action: str) -> str:
 
 class Konto:
     def __init__(self, host: str, port: int, client_id: int, konto: str, boerse: str, waehrung: str,
-                 ib=None, wartezeit: float = 3.0, flex=None):
+                 ib=None, wartezeit: float = 3.0, flex=None, marktdaten=None):
         if not konto.upper().startswith(PAPER_PREFIX):
             raise KontoFehler(f"Konto {konto!r} abgelehnt: Lotse läuft nur auf Paper-Konten ({PAPER_PREFIX}…).")
         self.host, self.port, self.client_id = host, port, client_id
@@ -129,7 +131,11 @@ class Konto:
         self.ib = ib
         self._flex = flex  # Test-Double für ib_async.FlexReport
         self._vertraege: dict[str, object] = {}
-        self.kursquellen: dict[str, str] = {}  # Papier -> woher der Kurs dieses Laufs stammt (für den Push)
+        if marktdaten is None:
+            from quantdesk.marketdata import MarketData
+
+            marktdaten = MarketData(broker=None)  # ohne IBKR: die SIX liefert ohne Abo keine Kurse
+        self._marktdaten = marktdaten
 
     # ------------------------------------------------------------------ Verbindung
     def verbinden(self) -> None:
@@ -143,7 +149,6 @@ class Konto:
         if self.konto not in konten:
             self.ib.disconnect()
             raise KontoFehler(f"Gateway meldet {konten}, erwartet {self.konto} – abgebrochen.")
-        self.ib.reqMarketDataType(3)  # verzögerte Kurse sind erlaubt (kein Echtzeit-Abo nötig)
 
     def trennen(self) -> None:
         if self.ib.isConnected():
@@ -176,59 +181,18 @@ class Konto:
                 out[p.contract.symbol] = menge
         return out
 
-    def kurse(self, papiere: list[str]) -> dict[str, Kurs]:
-        """Letzter Kurs je Papier mit dem Tag, von dem er stammt. Lotse läuft monatlich und braucht keinen
-        Live-Kurs: zuerst der letzte Tages-Schlusskurs (historisch, kein Abo nötig), sonst verzögerte Daten.
-        Fehlt beides, steht None drin – Regel 0 stoppt. Das Datum bleibt dabei, damit Regel 0 prüfen kann,
-        ob der Kurs älter als ein Handelstag ist."""
+    def kurse(self, papiere: list[str]) -> dict[str, Kursmeldung]:
+        """Letzter Kurs je Papier über quantdesk.marketdata (dieselbe Kursabfrage wie Bot C: Stooq, dann
+        Yahoo; IBKR nicht, weil die SIX ohne Abo keine Kurse liefert). Mit Datum, Währung und Quelle.
+        Fehlt ein Kurs, ist der Wert None – Regel 0 stoppt."""
         out = {}
-        self.kursquellen = {}
         for papier in papiere:
-            try:
-                vertrag = self._vertrag(papier)
-            except KontoFehler:
-                out[papier] = Kurs(None, None)
-                continue
-            kurs = self._kurs_historisch(vertrag)
-            quelle = HISTORISCH
-            if kurs is None:
-                kurs = self._kurs_verzoegert(vertrag)
-                quelle = VERZOEGERT
-            if kurs is None:
-                out[papier] = Kurs(None, None)
-                continue
-            out[papier] = kurs
-            self.kursquellen[papier] = quelle
+            q = self._marktdaten.get_quote(papier)
+            if q is None:
+                out[papier] = Kursmeldung(None, None, None, None)
+            else:
+                out[papier] = Kursmeldung(echte_zahl(q.price), q.datum, q.waehrung, q.source)
         return out
-
-    def _kurs_historisch(self, vertrag) -> Kurs | None:
-        """Jüngster Tagesbalken (Schlusskurs und sein Datum). None, wenn IBKR keinen liefert."""
-        try:
-            balken = self.ib.reqHistoricalData(vertrag, endDateTime="", durationStr=HISTORIE_ZEITRAUM,
-                                               barSizeSetting="1 day", whatToShow="TRADES", useRTH=True,
-                                               formatDate=1)
-        except (OSError, TimeoutError, ValueError, ConnectionError):
-            return None
-        for b in reversed(list(balken or [])):
-            wert = _kurs_oder_none(getattr(b, "close", None))
-            datum = _als_datum(getattr(b, "date", None))
-            if wert is not None and datum is not None:
-                return Kurs(wert, datum)
-        return None
-
-    def _kurs_verzoegert(self, vertrag) -> Kurs | None:
-        """Fallback: Live-Abfrage mit verzögerten Daten. None, wenn auch hier nichts kommt."""
-        self.ib.reqMarketDataType(3)
-        try:
-            ticker = self.ib.reqTickers(vertrag)[0]
-        except IndexError:
-            return None
-        wert = _kurs_oder_none(ticker.last)
-        if wert is None:
-            wert = _kurs_oder_none(ticker.close)
-        if wert is None:
-            return None
-        return Kurs(wert, _als_datum(getattr(ticker, "time", None)))
 
     def offene_orders(self) -> list[OffeneOrder]:
         """Offene Orders von Lotse (Referenz beginnt mit 'lotse-'). Fremde Orders werden nie angefasst."""

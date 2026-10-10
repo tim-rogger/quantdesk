@@ -115,6 +115,13 @@ class Tagebuch:
         """Tim hat eine grosse Einzahlung für diesen Lauf bestätigt."""
         self._schreib(self._laeufe, {"lauf": nummer, "ereignis": "einzahlung_bestaetigt", "zeit": jetzt.isoformat()})
 
+    def vermerke_kurse(self, nummer: int, meldungen: dict, jetzt: dt.datetime) -> None:
+        """Mit welchen Kursen der Lauf rechnet – Wert, Handelstag, Währung und Quelle je Papier."""
+        kurse = {papier: {"wert": m.wert if m.wert is not None and math.isfinite(m.wert) else None,
+                          "datum": m.datum.isoformat() if m.datum else None, "waehrung": m.waehrung,
+                          "quelle": m.quelle} for papier, m in meldungen.items()}
+        self._schreib(self._laeufe, {"lauf": nummer, "ereignis": "kurse", "zeit": jetzt.isoformat(), "kurse": kurse})
+
     def gesamt_letzter_lauf(self) -> float | None:
         """Depotwert des letzten beendeten Laufs, der einen Wert hatte (für Regel 12)."""
         werte = [e["gesamt"] for e in self._lies(self._laeufe)
