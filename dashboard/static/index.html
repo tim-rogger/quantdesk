@@ -3,80 +3,148 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0d1117">
+  <meta name="theme-color" content="#f6f8fa" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="light dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="QuantDesk">
   <title>QuantDesk</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="apple-touch-icon" href="/static/icon-180.png">
+  <!-- ?v=… bei jeder Änderung an CSS/JS erhöhen, sonst zeigt das Handy die alte Datei aus seinem Cache -->
+  <link rel="stylesheet" href="/static/style.css?v=6">
 </head>
 <body>
-  <header>
-    <div>
-      <h1>QuantDesk</h1>
-      <p id="subtitle" class="muted">Kandidat C · Vorwärtstest</p>
-    </div>
-    <nav class="nav"><a href="/system">System ›</a><span id="mode" class="badge">…</span></nav>
+  <header class="kopf">
+    <h1 id="seitentitel">Übersicht</h1>
+    <span id="paper-abzeichen" class="abzeichen">…</span>
   </header>
 
-  <div id="stop-banner" class="banner danger" hidden>STOP-ALL aktiv – der Bot handelt nicht.</div>
-  <div id="error-banner" class="banner warn" hidden></div>
+  <!-- gilt für alle Reiter: falsches Konto, veraltete Daten -->
+  <div id="warnung" class="banner danger" hidden></div>
+  <div id="veraltet" class="banner warn" hidden></div>
 
   <main>
-    <section class="cards">
-      <div class="card"><span class="label">Wert C</span><span id="c-value" class="big">–</span><span id="c-sub" class="muted small"></span></div>
-      <div class="card"><span class="label">Seit Start</span><span id="c-ret" class="big">–</span><span id="spy-ret" class="muted small"></span></div>
-      <div class="card"><span class="label">Investiert</span><span id="c-inv" class="big">–</span><span id="c-cash" class="muted small"></span></div>
-      <div class="card"><span class="label">Letzter Lauf</span><span id="last-run" class="big small-big">–</span><span id="last-run-sub" class="muted small"></span></div>
+    <!-- ================================================= Übersicht -->
+    <section id="ansicht-uebersicht" class="ansicht" aria-label="Übersicht">
+      <a id="ampel" class="ampel karte" href="#system">
+        <span class="punkt gross"></span>
+        <span>
+          <strong id="ampel-satz">Lade …</strong>
+          <span id="ampel-was" class="klein gedaempft"></span>
+        </span>
+      </a>
+      <h2 class="abschnitt">Bots</h2>
+      <div id="bot-karten" class="bot-raster"></div>
+      <h2 class="abschnitt">Absicherung</h2>
+      <a id="absicherung" class="absicherung karte" href="#system"></a>
     </section>
 
-    <section class="panel">
-      <h2>Kapitalkurve</h2>
-      <svg id="chart" viewBox="0 0 600 240" preserveAspectRatio="none" role="img" aria-label="Kapitalkurve"></svg>
-      <div id="legend" class="legend"></div>
-    </section>
+    <!-- ================================================= Bots -->
+    <section id="ansicht-bots" class="ansicht" aria-label="Bots" hidden>
+      <div id="bot-liste"></div>
 
-    <section class="panel">
-      <h2>Bestehen-Kriterien <span id="test-state" class="muted small"></span></h2>
-      <ul id="checks" class="checks"></ul>
-    </section>
+      <!-- Strategie C: alles, was die bisherige Startseite zeigte. bots.js hängt es in die Karte von C
+           (Registry: detail = "strategie-c"). app.js füllt es wie bisher aus /api/status. -->
+      <div id="detail-strategie-c" class="bot-detail" hidden>
+        <p id="subtitle" class="klein gedaempft">Kandidat C · Vorwärtstest</p>
+        <span id="mode" class="badge">…</span>
+        <div id="stop-banner" class="banner danger" hidden>STOP-ALL aktiv – der Bot handelt nicht.</div>
+        <div id="error-banner" class="banner warn" hidden></div>
 
-    <section class="panel">
-      <h2>Positionen <span id="pos-count" class="muted small"></span></h2>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Symbol</th><th class="num">Stück</th><th class="num">Ø</th><th class="num">Kurs</th><th class="num">G/V</th><th>Stufen</th></tr></thead>
-          <tbody id="positions"></tbody>
-        </table>
+        <div class="cards">
+          <div class="card"><span class="label">Wert C</span><span id="c-value" class="big">–</span><span id="c-sub" class="muted small"></span></div>
+          <div class="card"><span class="label">Seit Start</span><span id="c-ret" class="big">–</span><span id="spy-ret" class="muted small"></span></div>
+          <div class="card"><span class="label">Investiert</span><span id="c-inv" class="big">–</span><span id="c-cash" class="muted small"></span></div>
+          <div class="card"><span class="label">Letzter Lauf</span><span id="last-run" class="big small-big">–</span><span id="last-run-sub" class="muted small"></span></div>
+        </div>
+
+        <div class="panel">
+          <h3>Kapitalkurve</h3>
+          <svg id="chart" viewBox="0 0 600 240" preserveAspectRatio="none" role="img" aria-label="Kapitalkurve"></svg>
+          <div id="legend" class="legend"></div>
+        </div>
+
+        <div class="panel">
+          <h3>Bestehen-Kriterien <span id="test-state" class="muted small"></span></h3>
+          <ul id="checks" class="checks"></ul>
+        </div>
+
+        <div class="panel">
+          <h3>Positionen <span id="pos-count" class="muted small"></span></h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Symbol</th><th class="num">Stück</th><th class="num">Ø</th><th class="num">Kurs</th><th class="num">G/V</th><th>Stufen</th></tr></thead>
+              <tbody id="positions"></tbody>
+            </table>
+          </div>
+          <p id="excluded" class="muted small"></p>
+        </div>
+
+        <div class="panel">
+          <h3>Letzte Läufe</h3>
+          <ul id="runs" class="runs"></ul>
+        </div>
+
+        <div class="panel">
+          <h3>Verlauf <span class="muted small">Ausführungen, Warnungen, Fehler</span></h3>
+          <ul id="events" class="runs"></ul>
+        </div>
+
+        <!-- Die Notbremse gab es schon vor diesem Ausbau. Sie bleibt, bis Tim entscheidet (siehe PR). -->
+        <div class="panel stop">
+          <h3>Notbremse</h3>
+          <p class="muted small">STOP-ALL schaltet beim nächsten Lauf alle Systeme aus. Offene Orders bleiben bei IBKR.</p>
+          <form id="stop-form" autocomplete="off">
+            <input id="pin" type="password" inputmode="numeric" placeholder="PIN" aria-label="PIN" required>
+            <button type="submit" class="danger">STOP-ALL</button>
+          </form>
+          <p id="stop-msg" class="small"></p>
+        </div>
+        <p class="muted small">Stand Strategie C: <span id="generated">–</span></p>
       </div>
-      <p id="excluded" class="muted small"></p>
     </section>
 
-    <section class="panel">
-      <h2>Letzte Läufe</h2>
-      <ul id="runs" class="runs"></ul>
+    <!-- ================================================= System -->
+    <section id="ansicht-system" class="ansicht" aria-label="System" hidden>
+      <div class="karte skizze-karte">
+        <svg id="skizze" role="img" aria-label="Skizze der Infrastruktur mit Statusfarben"></svg>
+        <p class="legende klein">
+          <span><i class="punkt gruen"></i>läuft</span>
+          <span><i class="punkt gelb"></i>stimmt etwas nicht</span>
+          <span><i class="punkt rot"></i>aus / nicht erreichbar</span>
+          <span><i class="punkt grau"></i>nicht eingerichtet</span>
+        </p>
+      </div>
+      <div id="system-details"></div>
     </section>
 
-    <section class="panel">
-      <h2>Verlauf <span class="muted small">Ausführungen, Warnungen, Fehler</span></h2>
-      <ul id="events" class="runs"></ul>
-    </section>
-
-    <section class="panel stop">
-      <h2>Notbremse</h2>
-      <p class="muted small">STOP-ALL schaltet beim nächsten Lauf alle Systeme aus. Offene Orders bleiben bei IBKR.</p>
-      <form id="stop-form" autocomplete="off">
-        <input id="pin" type="password" inputmode="numeric" placeholder="PIN" aria-label="PIN" required>
-        <button type="submit" class="danger">STOP-ALL</button>
-      </form>
-      <p id="stop-msg" class="small"></p>
-    </section>
-
-    <p class="muted small footer">Paper-Trading. Keine Anlageberatung. Stand: <span id="generated">–</span></p>
+    <p class="fuss klein gedaempft">Nur zum Anschauen. Paper-Trading, kein echtes Geld.<br>Stand: <span id="stand">–</span></p>
   </main>
 
-  <script src="/static/app.js?v=2"></script>
+  <!-- feste Leiste unten: Links, keine Knöpfe -->
+  <nav class="tabbar" aria-label="Reiter">
+    <a href="#uebersicht" data-ansicht="uebersicht">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4zm0 7h6v-5H4zm10 0h6v-9h-6zm0-16v5h6V4z"/></svg>
+      <span>Übersicht</span>
+    </a>
+    <a href="#bots" data-ansicht="bots">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a1 1 0 0 1 1 1v1h4a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h4V3a1 1 0 0 1 1-1zM9 10a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm6 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm-5 5v1.5h4V15z"/></svg>
+      <span>Bots</span>
+    </a>
+    <a href="#system" data-ansicht="system">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v6H4zm0 10h16v6H4zm3-8v2h2V6zm0 10v2h2v-2z"/></svg>
+      <span>System</span>
+    </a>
+  </nav>
+
+  <script src="/static/kern.js?v=6"></script>
+  <script src="/static/uebersicht.js?v=6"></script>
+  <script src="/static/bots.js?v=6"></script>
+  <script src="/static/system.js?v=6"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>

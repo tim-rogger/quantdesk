@@ -1,21 +1,14 @@
 "use strict";
+// Strategie C im Detail (Reiter "Bots"): liest /api/status wie die frühere Startseite.
+// $, el und zeit kommen aus kern.js.
 
-const $ = (id) => document.getElementById(id);
 const money = (v) => v == null ? "–" : Math.round(v).toLocaleString("de-CH") + " $";
 const pct = (v, sign = true) => v == null ? "–" : (sign && v > 0 ? "+" : "") + (v * 100).toFixed(1) + " %";
-// Zeitpunkte immer MIT Zeitzone. ts = Unix-Sekunden; angezeigt in der Zeitzone des Handys, z.B. "Fr., 16:00 MESZ".
-const zeit = (ts, opts = { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) =>
-  new Date(ts * 1000).toLocaleString("de-CH", { ...opts, timeZoneName: "short" });
 // Der Bot plant in New-York-Zeit – zum Vergleichen mit dem Zeitplan (10:00 / 15:30) zusätzlich diese Uhrzeit
 const nyZeit = (ts) => new Date(ts * 1000).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" }) + " New York";
-const COLORS = { "C live (Paper)": "#3fb950", "SPY halten": "#58a6ff", "C Backtest (gleicher Zeitraum)": "#8b949e" };
-
-function el(tag, attrs = {}, text = "") {
-  const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
-  if (text) e.textContent = text;
-  return e;
-}
+// Farben aus style.css (CSS-Variablen), damit das Diagramm hell und dunkel stimmt
+const farbe = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const COLORS = { "C live (Paper)": "--gruen", "SPY halten": "--akzent", "C Backtest (gleicher Zeitraum)": "--text-2" };
 
 function curvesFrom(data) {
   const rep = data.report;
@@ -35,7 +28,7 @@ function drawChart(curves) {
   const names = Object.keys(curves);
   if (!names.length) {
     const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    Object.entries({ x: 300, y: 120, "text-anchor": "middle", fill: "#8b949e", "font-size": 14 }).forEach(([k, v]) => t.setAttribute(k, v));
+    Object.entries({ x: 300, y: 120, "text-anchor": "middle", fill: farbe("--text-2"), "font-size": 14 }).forEach(([k, v]) => t.setAttribute(k, v));
     t.textContent = "Noch keine Daten – nach den ersten Läufen.";
     svg.appendChild(t);
     return;
@@ -47,11 +40,11 @@ function drawChart(curves) {
   const y = (v) => H - pad - (v - lo) / (hi - lo) * (H - 2 * pad);
   const ns = "http://www.w3.org/2000/svg";
   const base = document.createElementNS(ns, "line");
-  Object.entries({ x1: 0, x2: W, y1: y(1), y2: y(1), stroke: "#30363d", "stroke-dasharray": "4 4" }).forEach(([k, v]) => base.setAttribute(k, v));
+  Object.entries({ x1: 0, x2: W, y1: y(1), y2: y(1), stroke: farbe("--linie"), "stroke-dasharray": "4 4" }).forEach(([k, v]) => base.setAttribute(k, v));
   svg.appendChild(base);
   names.forEach((name, i) => {
     const vals = curves[name].values;
-    const color = COLORS[name] || (name.startsWith("Mischung") ? "#bc8cff" : ["#d29922", "#f85149"][i % 2]);
+    const color = farbe(COLORS[name] || (name.startsWith("Mischung") ? "--violett" : ["--gelb", "--rot"][i % 2]));
     const pts = vals.map((v, j) => `${(j / Math.max(vals.length - 1, 1) * W).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
     const line = document.createElementNS(ns, "polyline");
     line.setAttribute("points", pts); line.setAttribute("fill", "none"); line.setAttribute("stroke", color);
@@ -191,6 +184,5 @@ $("stop-form").addEventListener("submit", async (ev) => {
   }
 });
 
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
 load();
 setInterval(load, 60000);

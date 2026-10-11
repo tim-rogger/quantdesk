@@ -1,6 +1,8 @@
 """QuantDesk-Dashboard: kleine Web-App (PWA) – nur lesend, einzige Aktion ist STOP-ALL mit PIN.
 
-Liest data/status.json und data/snapshots.jsonl, die run_daily.py nach jedem Lauf schreibt.
+Eine Seite mit drei Reitern (Übersicht, Bots, System), siehe static/index.html.
+Liest data/status.json und data/snapshots.jsonl, die run_daily.py nach jedem Lauf schreibt, und
+system.json vom Sammler (systemstatus).
 Spricht nie selbst mit IBKR. Erreichbar nur über Tailscale (`tailscale serve`), nicht öffentlich.
 
 Start lokal:  uvicorn dashboard.app:create_app --factory --port 8000
@@ -157,7 +159,8 @@ def create_app(settings=None, notifier: Notifier | None = None) -> FastAPI:
 
     @app.get("/system")
     def system_page() -> FileResponse:
-        return FileResponse(STATIC / "system.html", headers={"Cache-Control": "no-cache"})
+        # dieselbe App; kern.js öffnet bei /system den Reiter "System" (alte Lesezeichen gehen weiter)
+        return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
     @app.get("/healthz")
     def health() -> dict:

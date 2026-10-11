@@ -1,6 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#0d1117"/>
-  <polyline points="96,360 196,280 276,320 416,160" fill="none" stroke="#3fb950" stroke-width="44"
-            stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="416" cy="160" r="30" fill="#3fb950"/>
+  <!-- QuantDesk: ein "Q", dessen Schwanz ein grüner Strich ist. Alles liegt im sicheren Innenkreis (80 %). -->
+  <defs>
+    <linearGradient id="grund" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#14385e"/>
+      <stop offset="1" stop-color="#0a1a2b"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#grund)"/>
+  <circle cx="240" cy="236" r="118" fill="none" stroke="#f0f6fc" stroke-width="46"/>
+  <line x1="302" y1="302" x2="366" y2="366" stroke="#3fb950" stroke-width="50" stroke-linecap="round"/>
 </svg>

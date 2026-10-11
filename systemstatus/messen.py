@@ -20,7 +20,7 @@ import time
 import tomllib
 import urllib.request
 
-from systemstatus import tws
+from systemstatus import formate, tws
 
 COMPOSE_PROJEKT = "quantdesk"
 DASHBOARD_URL = "http://127.0.0.1:8080/healthz"   # wie in docker-compose.yml veröffentlicht
@@ -71,6 +71,20 @@ def env_gesetzt(pfad: str, schluessel: str) -> bool:
     except OSError:
         pass
     return False
+
+
+def erwartetes_konto(pfad: str) -> str | None:
+    """IBKR_ACCOUNT_ID aus der .env – die einzige Zeile, deren WERT der Sammler liest. Sie ist kein Passwort,
+    wird aber trotzdem nur maskiert angezeigt (bewerten.maskiere_konto)."""
+    try:
+        with open(pfad, encoding="utf-8") as f:
+            for z in f:
+                name, _, wert = z.strip().partition("=")
+                if name.strip() == "IBKR_ACCOUNT_ID":
+                    return wert.strip().strip('"').strip("'").upper() or None
+    except OSError:
+        pass
+    return None
 
 
 def lies_jsonl_ende(pfad: str, anzahl: int = 50) -> list[dict]:
@@ -273,14 +287,16 @@ def registry(pfad: str) -> list[dict]:
         return list(tomllib.load(f).get("bot", []))
 
 
-def bot(state: str, eintrag: dict) -> dict:
-    """Status- und Lauf-Datei eines Bots lesen (nur lesen!). nan/inf werden hier NICHT entfernt –
-    bewerten.py soll sie sehen und rot melden."""
+def bot(deploy: str, eintrag: dict, jetzt: float | None = None) -> dict:
+    """Dateien eines Bots lesen (nur lesen!). Pfade in der Registry sind relativ zu deploy/.
+    nan/inf werden hier NICHT entfernt – bewerten.py soll sie sehen und rot melden."""
     out: dict = {"eintrag": eintrag, "status": None, "laeufe": [], "fehler": ""}
     if not eintrag.get("eingerichtet"):
         return out
-    status_pfad = os.path.join(state, eintrag.get("status_datei", ""))
-    laeufe_pfad = os.path.join(state, eintrag.get("laeufe_datei", ""))
+    if eintrag.get("format") == "lotse-tagebuch":
+        return _lotse(deploy, eintrag, out, time.time() if jetzt is None else jetzt)
+    status_pfad = os.path.join(deploy, eintrag.get("status_datei", ""))
+    laeufe_pfad = os.path.join(deploy, eintrag.get("laeufe_datei", ""))
     try:
         with open(status_pfad, encoding="utf-8") as f:
             out["status"] = json.load(f)
@@ -295,6 +311,45 @@ def bot(state: str, eintrag: dict) -> dict:
     except OSError:
         out["fehler"] = out["fehler"] or "Lauf-Protokoll nicht lesbar"
     return out
+
+
+def _lotse(deploy: str, eintrag: dict, out: dict, jetzt: float) -> dict:
+    """Lotse hat keine Statusdatei, sondern ein Tagebuch (siehe formate.lotse_tagebuch)."""
+    try:
+        eintraege = lies_jsonl_ende(os.path.join(deploy, eintrag.get("laeufe_datei", "")), 500)
+    except FileNotFoundError:
+        eintraege = []  # noch nie gelaufen -> bewerten.py meldet gelb "noch kein Lauf"
+    except OSError:
+        out["fehler"] = "Tagebuch nicht lesbar"
+        return out
+    ausfuehrungen = _jsonl_oder_leer(os.path.join(deploy, eintrag.get("ausfuehrungen_datei", "")))
+    orders = _jsonl_oder_leer(os.path.join(deploy, eintrag.get("orders_datei", "")))
+    budget = _lotse_budget(os.path.join(deploy, eintrag.get("config_datei", "")))
+    status, laeufe = formate.lotse_tagebuch(eintraege, ausfuehrungen, orders, jetzt, eintrag.get("zeit_ohne_zone"),
+                                            eintrag.get("lauf_hoechstens_minuten", 30), budget)
+    # bewerten.py liest die übersetzten Felder unter diesen Namen
+    out["eintrag"] = eintrag | {"modus_feld": "modus", "investiert_feld": "investiert", "positionen_feld": "positionen",
+                                "budget_feld": "budget"}
+    out["status"], out["laeufe"] = status, laeufe
+    return out
+
+
+def _jsonl_oder_leer(pfad: str) -> list[dict]:
+    """Ganze JSONL-Datei. Fehlt sie (z.B. noch nie etwas ausgeführt), ist das kein Fehler: leere Liste."""
+    try:
+        return lies_jsonl_ende(pfad, 100000)
+    except OSError:
+        return []
+
+
+def _lotse_budget(pfad: str) -> float | None:
+    """budget_chf aus Lotses config.toml ([grenzen]). Nicht lesbar: None ("unbekannt")."""
+    try:
+        with open(pfad, "rb") as f:
+            budget = tomllib.load(f).get("grenzen", {}).get("budget_chf")
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    return float(budget) if isinstance(budget, (int, float)) and not isinstance(budget, bool) else None
 
 
 # ====================================================================== Backup und Totmannschalter
@@ -337,7 +392,6 @@ class Zwischenspeicher:
 
 def sammeln(deploy: str, speicher: Zwischenspeicher, merker: dict) -> dict:
     jetzt = time.time()
-    state = os.path.join(deploy, "state")
     env_pfad = os.path.join(deploy, ".env")
     srv = server()
     srv["sicherheitsupdates"] = speicher.hole("updates", 30 * 60, sicherheitsupdates)
@@ -346,9 +400,9 @@ def sammeln(deploy: str, speicher: Zwischenspeicher, merker: dict) -> dict:
         if ts.get("_dns") else None
     con = container(merker, jetzt)
     gateway_ip = (con.get("ib-gateway") or {}).get("_ip")
-    ib = speicher.hole("ib", 2 * 60, lambda: ib_gateway(gateway_ip))
+    ib = speicher.hole("ib", 2 * 60, lambda: ib_gateway(gateway_ip)) | {"erwartet": erwartetes_konto(env_pfad)}
     eintraege = registry(os.path.join(deploy, "bots.toml"))
-    bots = [bot(state, e) for e in eintraege]
+    bots = [bot(deploy, e, jetzt) for e in eintraege]
     logs_8_tage = speicher.hole("logs", 10 * 60, lambda: bot_logs(8 * 24))
     logs_48_h = "\n".join(z for z in logs_8_tage.splitlines()
                           if (iso_zu_unix(z.split(" ", 1)[0]) or 0) > jetzt - 48 * 3600)

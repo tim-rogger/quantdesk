@@ -1,6 +1,9 @@
 // Service-Worker: App-Hülle offline verfügbar, Daten immer frisch vom Server (mit Rückfall auf den letzten Stand).
-const CACHE = "quantdesk-v2";
-const SHELL = ["/", "/static/style.css", "/static/app.js", "/static/icon.svg", "/static/icon-192.png", "/manifest.webmanifest"];
+// CACHE erhöhen, wenn sich die Liste ändert. Die Adressen müssen genau so in index.html stehen (mit ?v=…).
+const CACHE = "quantdesk-v6";
+const SHELL = ["/", "/static/style.css?v=6", "/static/kern.js?v=6", "/static/uebersicht.js?v=6", "/static/bots.js?v=6",
+  "/static/system.js?v=6", "/static/app.js?v=6", "/static/icon.svg", "/static/icon-180.png", "/static/icon-192.png",
+  "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

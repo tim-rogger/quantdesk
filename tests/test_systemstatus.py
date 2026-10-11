@@ -17,14 +17,14 @@ from fastapi.testclient import TestClient
 from dashboard.app import create_app
 from quantdesk.config import load_settings
 from quantdesk.notify import Notifier
-from systemstatus import messen, tws
+from systemstatus import formate, messen, tws
 from systemstatus.bewerten import (
     bewerten, entschaerfen, faelliger_lauf, maskiere_konto, naechster_lauf, port22_offen, unix_zeit,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
 NY = ZoneInfo("America/New_York")
-C_EINTRAG = {"id": "c", "name": "Strategie C", "strategie": "Grid", "eingerichtet": True, "waehrung": "USD",
+C_EINTRAG = {"id": "c", "name": "Strategie C", "strategie": "Grid", "eingerichtet": True, "waehrung": "USD", "container": "bot",
              "zeitzone": "America/New_York", "laeufe": ["10:00", "15:30"]}
 
 
@@ -51,12 +51,13 @@ def beispiel(jetzt: float | None = None) -> dict:
                              "image_tag": "latest"} for name in ("bot", "ib-gateway", "ntfy", "dashboard")},
         "dashboard_antwortet": True,
         "ntfy": {"erreichbar": True, "letzte_nachricht": jetzt - 7200},
-        "ib": {"port_offen": True, "konten": ["DUO844164"], "fehler": "", "geprueft": jetzt - 60},
+        "ib": {"port_offen": True, "konten": ["DUO844164"], "fehler": "", "geprueft": jetzt - 60, "erwartet": "DUO844164"},
         "bots": [
             {"eintrag": C_EINTRAG, "fehler": "",
              "status": {"mode": "PAPER", "c_account": {"invested": 12345.6, "positions": {"AAPL": {}, "KO": {}}}},
              "laeufe": [{"ts": ny(2026, 10, 8, 10, 0, 1), "mode": "trade", "ok": True, "errors": []}]},
-            {"eintrag": {"id": "lotse", "name": "Lotse", "eingerichtet": False}, "status": None, "laeufe": [], "fehler": ""},
+            {"eintrag": {"id": "lotse", "name": "Lotse", "eingerichtet": False, "container": "lotse", "format": "lotse-tagebuch",
+                       "laeufe": ["10:30"], "zeitzone": "Europe/Zurich", "waehrung": "CHF"}, "status": None, "laeufe": [], "fehler": ""},
         ],
         "backup": {"eingerichtet": False, "letzter_snapshot": None},
         "totmann": {"eingerichtet": False, "ping_fehler": None, "letzter_versuch": None},
@@ -71,7 +72,7 @@ def kaesten(roh: dict) -> dict:
 def test_gesundes_system_ist_gruen_und_fehlendes_grau():
     k = kaesten(beispiel())
     grau = {i for i, x in k.items() if x["stufe"] == "grau"}
-    assert grau == {"laptop", "bot-lotse", "backup", "totmann"}  # Laptop offline ist kein Fehler
+    assert grau == {"laptop", "bot-lotse", "c-lotse", "backup", "totmann"}  # Laptop offline ist kein Fehler
     assert all(x["stufe"] == "gruen" for i, x in k.items() if i not in grau), {i: x["gruende"] for i, x in k.items()}
     assert k["backup"]["kurz"] == "noch nicht eingerichtet" and k["totmann"]["kurz"] == "noch nicht eingerichtet"
     ergebnis = bewerten(beispiel())
@@ -244,15 +245,107 @@ def test_zeit_ohne_zeitzone_wird_nicht_geraten():
     assert unix_zeit(1760000000) == 1760000000.0
 
 
-def test_registry_im_repo_c_eingerichtet_lotse_grau():
+def test_registry_im_repo_c_und_lotse():
     eintraege = messen.registry(str(ROOT / "deploy" / "bots.toml"))
     nach_id = {e["id"]: e for e in eintraege}
-    assert nach_id["c"]["eingerichtet"] is True and nach_id["c"]["status_datei"] == "data/status.json"
-    assert nach_id["lotse"]["eingerichtet"] is False
+    assert nach_id["c"]["status_datei"] == "state/data/status.json" and nach_id["c"]["container"] == "bot"
+    assert nach_id["lotse"]["eingerichtet"] is True and nach_id["lotse"]["format"] == "lotse-tagebuch"
+    assert nach_id["lotse"]["container"] == "lotse" and nach_id["lotse"]["laeufe_datei"] == "state-lotse/laeufe.jsonl"
     roh = beispiel()
     roh["bots"] = [messen.bot("gibt-es-nicht", e) for e in eintraege]
     k = kaesten(roh)
-    assert k["bot-lotse"]["stufe"] == "grau" and k["bot-c"]["stufe"] == "rot" and k["bot-c"]["kurz"] == "Statusdatei fehlt"
+    assert k["bot-c"]["stufe"] == "rot" and k["bot-c"]["kurz"] == "Statusdatei fehlt"
+    assert k["bot-lotse"]["stufe"] == "gelb" and k["bot-lotse"]["kurz"] == "noch kein Lauf im Protokoll"
+    assert k["c-lotse"]["stufe"] == "rot"  # Lotse eingerichtet, aber kein Container -> fehlt
+
+
+# ====================================================================== Lotse: anderes Protokoll-Format
+ZH = ZoneInfo("Europe/Zurich")
+
+
+def lotse_zeilen(nummer: int, zeit: str, ok: bool = True, ende: bool = True, modus: str = "VORSCHLAG") -> list[dict]:
+    """Wie Lotses Tagebuch: start, (kurse), bei Erfolg kasse, dann ende. Zeiten ohne Zeitzone, wie Lotse sie schreibt."""
+    out = [{"lauf": nummer, "ereignis": "start", "zeit": zeit, "modus": modus, "zieldatei": "..."},
+           {"lauf": nummer, "ereignis": "kurse", "zeit": zeit, "kurse": {}}]
+    if ok:
+        out.append({"lauf": nummer, "ereignis": "kasse", "zeit": zeit, "cash": 250.0, "investiert": 51.5})
+    if ende:
+        out.append({"lauf": nummer, "ereignis": "ende", "zeit": zeit,
+                    "ergebnis": "Nichts zu tun." if ok else "Broker: IB Gateway nicht erreichbar", "gesamt": None})
+    return out
+
+
+def test_lotse_tagebuch_uebersetzt_start_kasse_ende():
+    jetzt = dt.datetime(2026, 10, 8, 12, 0, tzinfo=ZH).timestamp()
+    zeilen = lotse_zeilen(1, "2026-10-07T04:30:01", ok=True) + lotse_zeilen(2, "2026-10-08T04:30:02", ok=False)
+    kauf = [{"papier": "SSAC", "seite": "KAUF", "menge": 0.5}, {"papier": "CSBGC7", "seite": "KAUF", "menge": 2},
+            {"papier": "CSBGC7", "seite": "VERKAUF", "menge": 2}]
+    status, laeufe = formate.lotse_tagebuch(zeilen, kauf, [], jetzt, "America/New_York", 25)
+    assert (status["modus"], status["investiert"], status["positionen"]) == ("VORSCHLAG", 51.5, 1)
+    assert [r["ok"] for r in laeufe] == [True, False]
+    assert laeufe[-1]["errors"] == ["Broker: IB Gateway nicht erreichbar"]
+    # 04:30 New York (ohne Zeitzone geschrieben) = 10:30 Zürich
+    assert laeufe[-1]["ts"] == dt.datetime(2026, 10, 8, 10, 30, 2, tzinfo=ZH).timestamp()
+
+
+def test_lotse_lauf_ohne_ende_laeuft_noch_oder_ist_abgestuerzt():
+    start = dt.datetime(2026, 10, 8, 10, 30, tzinfo=ZH)
+    zeilen = lotse_zeilen(1, "2026-10-07T04:30:00") + lotse_zeilen(2, "2026-10-08T04:30:00", ok=False, ende=False)
+    _, laeufe = formate.lotse_tagebuch(zeilen, [], [], (start + dt.timedelta(minutes=5)).timestamp(), "America/New_York", 25)
+    assert [r["lauf"] for r in laeufe] == [1]  # Lauf 2 läuft noch – zählt noch nicht
+    _, laeufe = formate.lotse_tagebuch(zeilen, [], [], (start + dt.timedelta(hours=1)).timestamp(), "America/New_York", 25)
+    assert laeufe[-1]["ok"] is False and "ohne Ende" in laeufe[-1]["errors"][0]
+
+
+def test_lotse_zeit_ohne_zone_wird_ohne_angabe_nicht_geraten():
+    _, laeufe = formate.lotse_tagebuch(lotse_zeilen(1, "2026-10-08T04:30:00"), [], [], 2e9, None, 25)
+    assert laeufe[0]["ts"] is None
+
+
+def _lotse_ordner(tmp_path, zeilen, ausfuehrungen=()):
+    (tmp_path / "state-lotse").mkdir(parents=True)
+    (tmp_path / "state-lotse" / "laeufe.jsonl").write_text("".join(json.dumps(z) + "\n" for z in zeilen), encoding="utf-8")
+    if ausfuehrungen:
+        (tmp_path / "state-lotse" / "ausfuehrungen.jsonl").write_text(
+            "".join(json.dumps(a) + "\n" for a in ausfuehrungen), encoding="utf-8")
+    eintrag = {e["id"]: e for e in messen.registry(str(ROOT / "deploy" / "bots.toml"))}["lotse"]
+    return eintrag
+
+
+def test_lotse_auf_system_gruen_gelb_rot(tmp_path):
+    """Mit dem echten Registry-Eintrag aus deploy/bots.toml und Dateien wie von Lotse geschrieben."""
+    eintrag = _lotse_ordner(tmp_path, lotse_zeilen(1, "2026-10-08T04:30:01"),
+                            [{"papier": "SSAC", "seite": "KAUF", "menge": 0.25}])
+    jetzt = dt.datetime(2026, 10, 8, 12, 0, tzinfo=ZH).timestamp()
+    roh = beispiel(jetzt)
+    roh["container"]["lotse"] = dict(roh["container"]["bot"])
+    roh["bots"][1] = messen.bot(str(tmp_path), eintrag, jetzt)
+    k = kaesten(roh)
+    assert k["bot-lotse"]["stufe"] == "gruen", k["bot-lotse"]["gruende"]
+    assert k["bot-lotse"]["modus"] == "VORSCHLAG" and k["bot-lotse"]["kurz"] == "52 CHF · 1 Pos."
+    assert k["bot-lotse"]["container"] == "lotse" and k["c-lotse"]["stufe"] == "gruen"
+    # nächster Tag 12:00 Zürich, der 10:30-Lauf fehlt -> gelb
+    roh["jetzt"] = dt.datetime(2026, 10, 9, 12, 0, tzinfo=ZH).timestamp()
+    assert kaesten(roh)["bot-lotse"]["gruende"] == ["geplanter Lauf fehlt"]
+
+
+def test_lotse_gescheiterter_lauf_ist_rot(tmp_path):
+    eintrag = _lotse_ordner(tmp_path, lotse_zeilen(1, "2026-10-08T04:30:01", ok=False))
+    jetzt = dt.datetime(2026, 10, 8, 12, 0, tzinfo=ZH).timestamp()
+    roh = beispiel(jetzt)
+    roh["bots"][1] = messen.bot(str(tmp_path), eintrag, jetzt)
+    lotse = kaesten(roh)["bot-lotse"]
+    assert lotse["stufe"] == "rot" and "IB Gateway nicht erreichbar" in lotse["kurz"]
+
+
+def test_lotse_nicht_eingerichtet_ohne_container_ist_grau():
+    k = kaesten(beispiel())
+    assert k["bot-lotse"]["stufe"] == "grau" and k["c-lotse"]["stufe"] == "grau"
+
+
+def test_skizze_kennt_container_aus_der_registry():
+    js = (ROOT / "dashboard" / "static" / "system.js").read_text(encoding="utf-8")
+    assert "bot.container" in js and "p._linien" in js and '"c-bot"' not in js  # kein fest verdrahteter Bot-Container
 
 
 def test_dritter_bot_braucht_nur_einen_registry_eintrag(tmp_path):
@@ -445,18 +538,39 @@ def test_dashboard_system_liest_nur_die_datei(tmp_path, monkeypatch):
     assert client.get("/api/system").json()["fehlt"] is True
     seite = client.get("/system")
     assert seite.status_code == 200 and "system.js" in seite.text
-    assert client.get("/static/system.js").status_code == 200 and 'href="/system"' in client.get("/").text
+    assert client.get("/static/system.js").status_code == 200 and 'href="#system"' in client.get("/").text
 
 
-def test_systemseite_hat_keine_aktionen(tmp_path, monkeypatch):
+NEUE_SKRIPTE = ("kern.js", "uebersicht.js", "bots.js", "system.js")
+
+
+def test_app_hat_keine_neuen_aktionen(tmp_path, monkeypatch):
+    """Nur anschauen. Die einzige Aktion der ganzen App ist die alte Notbremse (STOP-ALL) von Strategie C."""
     app = _client(tmp_path, monkeypatch, tmp_path / "x.json").app
-    for route in app.routes:
-        if getattr(route, "path", "") in ("/system", "/api/system"):
-            assert route.methods <= {"GET", "HEAD"}
-    js = (ROOT / "dashboard" / "static" / "system.js").read_text(encoding="utf-8")
-    html = (ROOT / "dashboard" / "static" / "system.html").read_text(encoding="utf-8")
-    assert "POST" not in js and "method" not in js and "<button" not in html and "<form" not in html
-    assert "innerHTML = \"\"" in js and ".innerHTML =" not in js.replace('innerHTML = ""', "")  # Daten nie als HTML
+    schreibend = [r.path for r in app.routes if getattr(r, "methods", set()) - {"GET", "HEAD"}]
+    assert schreibend == ["/api/stop"]
+    for name in NEUE_SKRIPTE:
+        js = (ROOT / "dashboard" / "static" / name).read_text(encoding="utf-8")
+        assert "POST" not in js and "method" not in js, name
+        assert ".innerHTML =" not in js.replace('innerHTML = ""', ""), name  # Daten nie als HTML
+    html = (ROOT / "dashboard" / "static" / "index.html").read_text(encoding="utf-8")
+    assert html.count("<form") == 1 and 'id="stop-form"' in html and html.count("<button") == 1
+
+
+def test_eine_app_drei_reiter_und_offline_huelle(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, tmp_path / "x.json")
+    html = client.get("/").text
+    for reiter in ("#uebersicht", "#bots", "#system"):
+        assert f'href="{reiter}"' in html
+    assert client.get("/system").text == html  # alte Adresse öffnet dieselbe App
+    assert "System ›" not in html and "‹ Dashboard" not in html  # die alten Textlinks sind weg
+    sw = (ROOT / "dashboard" / "static" / "sw.js").read_text(encoding="utf-8")
+    import re
+    for adresse in re.findall(r'(?:src|href)="(/static/[^"]+)"', html):
+        assert f'"{adresse}"' in sw, f"{adresse} fehlt in sw.js (SHELL)"
+        assert client.get(adresse).status_code == 200, adresse
+    manifest = client.get("/manifest.webmanifest").json()
+    assert {i["sizes"] for i in manifest["icons"]} >= {"180x180", "192x192", "512x512"}
 
 
 # ====================================================================== Aufbau: kein Socket, nur lesend, nur Standardbibliothek
@@ -483,3 +597,110 @@ def test_sammler_braucht_nur_die_standardbibliothek():
             for name in namen:
                 wurzel = name.split(".")[0]
                 assert wurzel in sys.stdlib_module_names or wurzel in ("systemstatus", "__future__"), f"{datei.name}: {name}"
+
+
+# ====================================================================== Auftrag 2: genaues Konto, Ampel, Lotse vollständig
+def test_konto_wird_gegen_die_genaue_ibkr_account_id_geprueft():
+    roh = beispiel()
+    roh["ib"]["erwartet"] = "DU1111111"   # anderes Paper-Konto als gemeldet
+    ergebnis = bewerten(roh)
+    ibkr = {k["id"]: k for k in ergebnis["kaesten"]}["ibkr"]
+    assert ibkr["stufe"] == "rot" and ibkr["kurz"] == "anderes Konto als in .env" and ibkr["paper"] is False
+    assert "erwartet ist DU…111" in ergebnis["warnungen"][0]
+    assert "DU1111111" not in json.dumps(ergebnis)
+    roh["ib"]["erwartet"] = None          # nicht gesetzt: nur DU geprüft -> gelb, nie grün
+    assert kaesten(roh)["ibkr"]["stufe"] == "gelb"
+    roh["ib"]["erwartet"] = "DUO844164"
+    assert kaesten(roh)["ibkr"]["paper"] is True
+
+
+def test_erwartetes_konto_aus_env(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("TWS_USERID=x\nIBKR_ACCOUNT_ID=duo844164\n", encoding="utf-8")
+    assert messen.erwartetes_konto(str(env)) == "DUO844164"
+    env.write_text("IBKR_ACCOUNT_ID=\n", encoding="utf-8")
+    assert messen.erwartetes_konto(str(env)) is None
+
+
+def test_ampel_ein_satz_schlechteste_farbe_bestimmt():
+    assert bewerten(beispiel())["ampel"] == {"stufe": "gruen", "satz": "Alles läuft", "was": []}
+    roh = beispiel()
+    roh["ntfy"]["letzte_nachricht"] = None
+    a = bewerten(roh)["ampel"]
+    assert a["stufe"] == "gelb" and a["satz"] == "1 Sache stimmt nicht" and a["was"] == ["ntfy: keine Nachricht bekannt"]
+    roh["server"]["ufw_aktiv"] = False
+    a = bewerten(roh)["ampel"]
+    assert a["stufe"] == "rot" and a["satz"] == "Etwas ist aus" and a["was"][0] == "Server quantdesk: Firewall (ufw) ist aus"
+
+
+def test_ampel_grau_zaehlt_nicht():
+    """Backup, Totmannschalter, Laptop offline: grau, aber kein Grund für gelb."""
+    k = kaesten(beispiel())
+    assert k["backup"]["stufe"] == "grau" and bewerten(beispiel())["ampel"]["stufe"] == "gruen"
+
+
+def lotse_orders(nummer: int, zustand: str = "vorschlag") -> list[dict]:
+    notiert = {"ref": f"lotse-{nummer}-1", "ereignis": "notiert", "zeit": "2026-10-08T04:30:05", "lauf": nummer,
+               "papier": "SSAC", "seite": "KAUF", "betrag": 294.12, "stueck": 2.8125, "limit": 106.1}
+    return [notiert, {"ref": f"lotse-{nummer}-1", "ereignis": zustand, "zeit": "2026-10-08T04:30:06"}]
+
+
+def test_lotse_letzter_vorschlag_kursquelle_und_budget():
+    zeilen = lotse_zeilen(1, "2026-10-07T04:30:01") + lotse_zeilen(2, "2026-10-08T04:30:01")
+    zeilen.insert(-2, {"lauf": 2, "ereignis": "kurse", "zeit": "2026-10-08T04:30:03",
+                       "kurse": {"SSAC": {"wert": 104.5, "datum": "2026-10-07", "waehrung": "CHF", "quelle": "yahoo"}}})
+    orders = lotse_orders(1, "verworfen") + lotse_orders(2)
+    jetzt = dt.datetime(2026, 10, 8, 12, 0, tzinfo=ZH).timestamp()
+    status, _ = formate.lotse_tagebuch(zeilen, [], orders, jetzt, "America/New_York", 25, budget=300)
+    assert status["vorschlaege"] == ["Kauf SSAC 2.8125 Stück, ~294 CHF – nur Vorschlag – nicht gesendet"]  # nur Lauf 2
+    assert status["kurse"] == ["SSAC 104.5 CHF – Kurs von Yahoo, 07.10."]
+    assert status["budget"] == 300
+
+
+def test_lotse_ohne_orders_zeigt_das_ergebnis():
+    jetzt = dt.datetime(2026, 10, 8, 12, 0, tzinfo=ZH).timestamp()
+    status, _ = formate.lotse_tagebuch(lotse_zeilen(1, "2026-10-08T04:30:01"), [], [], jetzt, "America/New_York", 25)
+    assert status["vorschlaege"] == ["Nichts zu tun."]
+
+
+def test_lotse_vollstaendig_auf_bots_seite(tmp_path):
+    """Echter Registry-Eintrag, Dateien wie Lotse sie schreibt, Budget aus Lotses config.toml."""
+    eintrag = _lotse_ordner(tmp_path / "deploy", lotse_zeilen(1, "2026-10-08T04:30:01"))
+    (tmp_path / "deploy" / "state-lotse" / "orders.jsonl").write_text(
+        "".join(json.dumps(o) + "\n" for o in lotse_orders(1)), encoding="utf-8")
+    (tmp_path / "lotse").mkdir()
+    (tmp_path / "lotse" / "config.toml").write_text("[grenzen]\nbudget_chf = 300\n", encoding="utf-8")
+    jetzt = dt.datetime(2026, 10, 8, 12, 0, tzinfo=ZH).timestamp()
+    roh = beispiel(jetzt)
+    roh["container"]["lotse"] = dict(roh["container"]["bot"])
+    roh["bots"][1] = messen.bot(str(tmp_path / "deploy"), eintrag, jetzt)
+    lotse = kaesten(roh)["bot-lotse"]
+    werte = {z["t"]: z.get("w") for z in lotse["zeilen"]}
+    assert lotse["stufe"] == "gruen" and lotse["modus"] == "VORSCHLAG"
+    assert werte["Budget"] == "300 CHF" and werte["Letzter Vorschlag"].startswith("Kauf SSAC 2.8125 Stück")
+    assert lotse["strategie_kurz"] == "ETF-Aufteilung 85/15" and lotse["investiert"] == "52 CHF"
+    assert lotse["naechster_lauf"] and lotse["letzter_lauf"]
+
+
+def test_dritter_bot_hat_alles_fuer_uebersicht_und_bots_seite(tmp_path):
+    """Ein dritter Bot nur per Registry: er bekommt dieselben Felder, die Übersicht und Bots-Seite anzeigen."""
+    (tmp_path / "bots.toml").write_text('''
+[[bot]]
+id = "drei"
+name = "Bot Drei"
+strategie = "Test"
+strategie_kurz = "drei Wörter hier"
+eingerichtet = true
+status_datei = "s.json"
+laeufe_datei = "l.jsonl"
+waehrung = "USD"
+''', encoding="utf-8")
+    (tmp_path / "s.json").write_text(json.dumps({"mode": "PAPER", "c_account": {"invested": 10, "positions": {}}}))
+    (tmp_path / "l.jsonl").write_text(json.dumps({"ts": 1.76e9, "ok": True, "errors": []}) + "\n")
+    roh = beispiel()
+    roh["bots"].append(messen.bot(str(tmp_path), messen.registry(str(tmp_path / "bots.toml"))[0], roh["jetzt"]))
+    drei = kaesten(roh)["bot-drei"]
+    for feld_name in ("titel", "stufe", "modus", "strategie_kurz", "investiert", "letzter_lauf", "zeilen"):
+        assert drei.get(feld_name) is not None, feld_name
+    js = "".join((ROOT / "dashboard" / "static" / f).read_text(encoding="utf-8") for f in ("uebersicht.js", "bots.js"))
+    assert 'startsWith("bot-")' in js and '"bot-c"' not in js and '"bot-lotse"' not in js  # keine fest verdrahteten Bots
