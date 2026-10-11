@@ -1,0 +1,31 @@
+# systemd-Dienst für den Systemstatus-Sammler (schreibt deploy/state/system/system.json alle 30 s).
+# Einrichten (einmalig, siehe SERVER.md "Systemseite"):
+#   sudo cp ~/quantdesk/deploy/systemstatus.service /etc/systemd/system/quantdesk-systemstatus.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now quantdesk-systemstatus
+# Pfade gehen von /home/tim/quantdesk aus – anderer Ort: die drei Zeilen mit /home/tim anpassen.
+#
+# Läuft als root, weil `ufw status` nur root lesen darf. Dafür eng eingezäunt:
+#   - schreiben darf er nur in deploy/state/system/, der Rest des Systems ist für ihn schreibgeschützt
+#   - Netzwerk nur lokal: localhost, Docker-interne Adressen, Tailscale. Kein Internet.
+[Unit]
+Description=QuantDesk Systemstatus-Sammler (für /system im Dashboard)
+After=docker.service tailscaled.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tim/quantdesk
+ExecStart=/usr/bin/python3 -m systemstatus --deploy /home/tim/quantdesk/deploy
+Restart=always
+RestartSec=15
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/tim/quantdesk/deploy/state/system
+IPAddressDeny=any
+IPAddressAllow=localhost 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10
+
+[Install]
+WantedBy=multi-user.target

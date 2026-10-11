@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
+import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -25,6 +28,53 @@ from quantdesk.status import STOP_FILE, read_jsonl
 STATIC = Path(__file__).parent / "static"
 MAX_PIN_FAILS = 5
 LOCKOUT_SECONDS = 15 * 60
+# IBKR-Kontonummern (DU1234567, DUO844164, U1234567): Buchstaben, dann mindestens eine Ziffer
+ACCOUNT_RE = re.compile(r"\b(DU|U)(?=[A-Z0-9]*\d)[A-Z0-9]{4,}\b")
+PLACEHOLDER = 1e300  # ib_async benutzt 1.8e308 als "kein Wert" – nie eine echte Zahl
+
+
+def mask_account(text: str) -> str:
+    """DUO844164 -> "DU…164". Diese Seite wird fotografiert und herumgeschickt – die volle Nummer gehört nicht drauf."""
+    return ACCOUNT_RE.sub(lambda m: m.group(1) + "…" + m.group(0)[-3:], text)
+
+
+def clean_for_page(data, path: str = "", bad: list[str] | None = None):
+    """Alles, was an die Seite geht: Kontonummern maskieren, nan/inf/Platzhalter durch null ersetzen.
+
+    Ohne das bricht die Antwort mit Fehler 500 ab (gültiges JSON kennt kein NaN) – und die Seite wäre genau
+    dann blind, wenn etwas kaputt ist. Wo eine kaputte Zahl stand, wird in `bad` gemerkt und angezeigt.
+    Gibt (bereinigte Daten, Liste der kaputten Stellen) zurück.
+    """
+    bad = [] if bad is None else bad
+    if isinstance(data, str):
+        return mask_account(data), bad
+    if isinstance(data, float) and (not math.isfinite(data) or abs(data) >= PLACEHOLDER):
+        bad.append(path or "Wert")
+        return None, bad
+    if isinstance(data, dict):
+        return {k: clean_for_page(v, f"{path}.{k}" if path else str(k), bad)[0] for k, v in data.items()}, bad
+    if isinstance(data, list):
+        return [clean_for_page(v, f"{path}[{i}]", bad)[0] for i, v in enumerate(data)], bad
+    return data, bad
+
+
+def read_system_file(path: Path) -> dict:
+    """system.json lesen, die der Sammler (systemstatus, läuft auf dem Host) alle 30 s schreibt.
+
+    Fehlt die Datei oder ist sie kaputt, gibt es einen Hinweis statt eines Absturzes. nan/inf (darf der
+    Sammler nie schreiben) werden zu null – sonst könnte die Seite die Antwort nicht lesen.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"fehlt": True, "grund": "Noch keine Daten – läuft der Sammler (quantdesk-systemstatus)?"}
+    except OSError:
+        return {"fehlt": True, "grund": "Datei nicht lesbar."}
+    try:
+        data = json.loads(text, parse_constant=lambda _: None)
+    except ValueError:
+        return {"fehlt": True, "grund": "Datei unvollständig oder kaputt."}
+    return data if isinstance(data, dict) else {"fehlt": True, "grund": "Datei hat ein unerwartetes Format."}
 
 
 class StopRequest(BaseModel):
@@ -65,11 +115,19 @@ def create_app(settings=None, notifier: Notifier | None = None) -> FastAPI:
     @app.get("/api/status")
     def status() -> JSONResponse:
         path = data_dir / "status.json"
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"missing": True}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"missing": True}
+        except ValueError:
+            data = {"missing": True, "error": "status.json ist kaputt (nicht lesbar)."}
         stop = data_dir / STOP_FILE
         data["stop_active"] = stop.exists()
         data["stop_since"] = stop.stat().st_mtime if stop.exists() else None
-        data["snapshots"] = read_jsonl(str(data_dir / "snapshots.jsonl"))
+        try:
+            data["snapshots"] = read_jsonl(str(data_dir / "snapshots.jsonl"))
+        except ValueError:
+            data["snapshots"] = []
+        data, bad = clean_for_page(data)
+        data["invalid_numbers"] = bad[:5]
         return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
     @app.post("/api/stop")
@@ -89,6 +147,17 @@ def create_app(settings=None, notifier: Notifier | None = None) -> FastAPI:
                       "Über das Dashboard. Beim nächsten Lauf werden alle Systeme ausgeschaltet; offene Orders bleiben "
                       "bei IBKR – bei Bedarf im Portal stornieren.", "error")
         return {"ok": True, "message": "STOP-ALL aktiv. Der Bot handelt ab dem nächsten Lauf nicht mehr."}
+
+    # --- Systemseite: nur lesen. Hier gibt es bewusst keine POST-Route und keinen Knopf.
+    system_file = Path(os.getenv("QUANTDESK_SYSTEM_FILE", "state/system/system.json"))
+
+    @app.get("/api/system")
+    def system_status() -> JSONResponse:
+        return JSONResponse(read_system_file(system_file), headers={"Cache-Control": "no-store"})
+
+    @app.get("/system")
+    def system_page() -> FileResponse:
+        return FileResponse(STATIC / "system.html", headers={"Cache-Control": "no-cache"})
 
     @app.get("/healthz")
     def health() -> dict:
