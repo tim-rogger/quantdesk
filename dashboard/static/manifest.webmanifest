@@ -1,14 +1,15 @@
 {
   "name": "QuantDesk",
   "short_name": "QuantDesk",
-  "description": "Vorwärtstest Kandidat C – Paper-Trading",
-  "start_url": "/",
+  "description": "Bots, Server und Absicherung auf einen Blick – Paper-Trading",
+  "start_url": "/#uebersicht",
   "scope": "/",
   "display": "standalone",
   "background_color": "#0d1117",
   "theme_color": "#0d1117",
   "lang": "de",
   "icons": [
+    {"src": "/static/icon-180.png", "sizes": "180x180", "type": "image/png"},
     {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
     {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
     {"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml"}

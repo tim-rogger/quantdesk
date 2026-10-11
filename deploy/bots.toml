@@ -5,6 +5,8 @@
 # Pfade sind relativ zu deploy/ auf dem Server (z.B. "state/data/status.json").
 #
 # Allgemeine Felder:
+#   strategie_kurz  drei Wörter für die Karte auf der Übersicht
+#   detail        optional: Id eines Zusatz-Blocks in dashboard/static/index.html (detail-<name>)
 #   container     Name des Docker-Compose-Dienstes, in dem der Bot läuft – erscheint als Kasten in der Skizze
 #   laeufe        geplante Uhrzeiten (Mo–Fr) in `zeitzone`. Börsenfeiertage kennt der Sammler nicht.
 #   eingerichtet  false = grauer Kasten "noch nicht eingerichtet" (kein Fehler).
@@ -25,14 +27,18 @@
 #   laeufe_datei         laeufe.jsonl des Tagebuchs
 #   ausfuehrungen_datei  ausfuehrungen.jsonl (für die Anzahl Positionen)
 #   zeit_ohne_zone       in welcher Zeitzone die Zeiten gemeint sind, wenn sie keine mitbringen
+#   orders_datei         orders.jsonl (für den letzten Vorschlag im Klartext)
+#   config_datei         Lotses config.toml (für das Budget, [grenzen] budget_chf)
 #   lauf_hoechstens_minuten  ein Lauf ohne "ende", der jünger ist, läuft noch; älter = abgestürzt
 
 [[bot]]
 id = "c"
 name = "Strategie C"
 strategie = "Grid 5 × 2 %, SMA200 + Ausstieg"
+strategie_kurz = "Grid mit Trendfilter"
 eingerichtet = true
 container = "bot"
+detail = "strategie-c"            # zusätzlicher Inhalt auf der Bots-Seite (Kapitalkurve, Kriterien, Positionen)
 status_datei = "state/data/status.json"
 laeufe_datei = "state/data/runs.jsonl"
 waehrung = "USD"
@@ -43,11 +49,14 @@ laeufe = ["10:00", "15:30"]
 id = "lotse"
 name = "Lotse"
 strategie = "Umschichten nach Zielgewichten (SIX-ETFs)"
+strategie_kurz = "ETF-Aufteilung 85/15"
 eingerichtet = true
 container = "lotse"
 format = "lotse-tagebuch"
 laeufe_datei = "state-lotse/laeufe.jsonl"
 ausfuehrungen_datei = "state-lotse/ausfuehrungen.jsonl"
+orders_datei = "state-lotse/orders.jsonl"
+config_datei = "../lotse/config.toml"   # liegt im Repo, nicht in deploy/
 # Lotse schreibt Zeiten ohne Zeitzone (dt.datetime.now()). Im Container gilt TZ=America/New_York (deploy/Dockerfile),
 # also sind sie New-York-Zeit. Ändert sich das (Lotse schreibt Zeitzone mit), hier nichts tun – dann zählt die echte.
 zeit_ohne_zone = "America/New_York"

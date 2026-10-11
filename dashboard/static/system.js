@@ -1,52 +1,8 @@
 "use strict";
-// Systemseite: zeichnet system.json (vom Sammler auf dem Host) als Skizze der Infrastruktur.
-// Nur lesen – auf dieser Seite gibt es keine Knöpfe und keine Anfragen, die etwas verändern.
-// Alle Texte aus den Daten werden mit textContent gesetzt (nie als HTML).
+// Reiter "System": system.json als Skizze der Infrastruktur, darunter je Kasten die Einzelheiten.
+// Farben kommen aus style.css (Klassen sk-…), damit die Skizze im hellen und dunklen Modus stimmt.
 
-const $ = (id) => document.getElementById(id);
-const SVG = "http://www.w3.org/2000/svg";
-const VERALTET_NACH_SEKUNDEN = 120;
-const NEU_LADEN_SEKUNDEN = 30;
-
-const FARBE = {
-  gruen: { linie: "#3fb950", fuellung: "#10261a" },
-  gelb: { linie: "#d29922", fuellung: "#2e2410" },
-  rot: { linie: "#f85149", fuellung: "#3a1214" },
-  grau: { linie: "#6e7681", fuellung: "#0d1117" },
-};
-const SYMBOL = { gruen: "✓", gelb: "!", rot: "✕", grau: "–" };
-const STUFE_TEXT = { gruen: "grün – läuft", gelb: "gelb – stimmt etwas nicht", rot: "rot – aus oder nicht erreichbar",
-  grau: "grau – kein Fehler" };
-
-let daten = null;        // zuletzt erfolgreich geladene system.json
-let ladeFehler = "";     // Text, falls das Dashboard gerade nicht antwortet
-
-// ---------------------------------------------------------------- Zeit (immer mit Zeitzone)
-function zeit(ts) {
-  return new Date(ts * 1000).toLocaleString("de-CH", { weekday: "short", day: "2-digit", month: "2-digit",
-    hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
-}
-
-function uhrzeitIn(ts, zone) {
-  const stadt = zone.split("/").pop().replace(/_/g, " ");
-  return new Date(ts * 1000).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: zone }) + " " + stadt;
-}
-
-function relativ(ts) {
-  const s = Math.round(ts - Date.now() / 1000);
-  const a = Math.abs(s);
-  const text = a < 90 ? `${a} s` : a < 5400 ? `${Math.round(a / 60)} min` : a < 172800 ? `${Math.round(a / 3600)} h` : `${Math.round(a / 86400)} d`;
-  return s < 0 ? `vor ${text}` : `in ${text}`;
-}
-
-function zeitText(zeile) {
-  let text = `${zeit(zeile.z)} (${relativ(zeile.z)})`;
-  const hier = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  if (zeile.zone && zeile.zone !== hier) text += ` · ${uhrzeitIn(zeile.z, zeile.zone)}`;
-  return text;
-}
-
-// ---------------------------------------------------------------- Skizze
+// ---------------------------------------------------------------- Plätze in der Skizze
 // Koordinaten der Skizze: 360 breit. Oben fest: Geräte, Tunnel, Server.
 // Im Docker-Rahmen zwei Spalten:
 //   links  je Bot sein Container und direkt darunter der Bot (Reihenfolge und Anzahl aus der Registry)
@@ -94,13 +50,7 @@ function plaetze(kaesten) {
   return p;
 }
 
-function svgEl(tag, attrs = {}, text = "") {
-  const e = document.createElementNS(SVG, tag);
-  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
-  if (text) e.textContent = text;
-  return e;
-}
-
+// ---------------------------------------------------------------- Zeichnen
 // Text kürzen, damit er in den Kasten passt. Ein Zeichen ist im Mittel etwa eine halbe Schriftgrösse breit.
 function kuerzen(text, platz, schrift, fett = false) {
   const max = Math.floor(platz / (schrift * (fett ? 0.55 : 0.5)));
@@ -112,40 +62,36 @@ function kuerzen(text, platz, schrift, fett = false) {
 function linie(svg, a, b) {
   const x1 = a.x + a.w / 2, y1 = a.y + a.h, x2 = b.x + b.w / 2, y2 = b.y;
   const mitte = (y1 + y2) / 2;
-  svg.appendChild(svgEl("path", { d: `M${x1},${y1} V${mitte} H${x2} V${y2}`, fill: "none", stroke: "#30363d", "stroke-width": 2 }));
+  svg.appendChild(svgEl("path", { d: `M${x1},${y1} V${mitte} H${x2} V${y2}`, class: "sk-linie" }));
 }
 
-function modusKlasse(modus) {
-  const m = String(modus || "").toUpperCase();
-  return m === "PAPER" ? "paper" : m === "ECHT" || m === "LIVE" ? "echt" : "probe";
+// Bot-Kästen führen zum Bots-Reiter, alle anderen zur Karte unter der Skizze
+function ziel(k) {
+  return k.id.startsWith("bot-") ? `#bots/${k.id}` : `#system/k-${k.id}`;
 }
 
 function zeichneKasten(svg, k, p) {
-  const f = FARBE[k.stufe] || FARBE.grau;
-  const a = svgEl("a", { href: `#k-${k.id}`, "aria-label": `${k.titel}: ${STUFE_TEXT[k.stufe] || k.stufe}` });
-  a.appendChild(svgEl("rect", { x: p.x, y: p.y, width: p.w, height: p.h, rx: p.rund ? p.h / 2 : 10, fill: f.fuellung,
-    stroke: f.linie, "stroke-width": k.stufe === "rot" ? 2.5 : 1.5, "stroke-dasharray": k.stufe === "grau" ? "5 4" : "none" }));
+  const a = svgEl("a", { href: ziel(k), class: `sk-kasten ${k.stufe}`, "aria-label": `${k.titel}: ${STUFE_TEXT[k.stufe] || k.stufe}` });
+  a.appendChild(svgEl("rect", { x: p.x, y: p.y, width: p.w, height: p.h, rx: p.rund ? p.h / 2 : 10, class: "sk-flaeche" }));
   const links = p.x + (p.rund ? 18 : 10);
-  a.appendChild(svgEl("circle", { cx: links + 8, cy: p.y + 19, r: 8, fill: k.stufe === "grau" ? "none" : f.linie,
-    stroke: f.linie, "stroke-dasharray": k.stufe === "grau" ? "3 2" : "none" }));
-  a.appendChild(svgEl("text", { x: links + 8, y: p.y + 23, "text-anchor": "middle", "font-size": 11, "font-weight": 700,
-    fill: k.stufe === "grau" ? f.linie : "#0d1117" }, SYMBOL[k.stufe] || "?"));
-  a.appendChild(svgEl("text", { x: links + 22, y: p.y + 23, "font-size": 13, "font-weight": 600, fill: "#e6edf3" },
+  a.appendChild(svgEl("circle", { cx: links + 8, cy: p.y + 19, r: 8, class: "sk-punkt" }));
+  a.appendChild(svgEl("text", { x: links + 8, y: p.y + 23, "text-anchor": "middle", class: "sk-symbol" }, SYMBOL[k.stufe] || "?"));
+  a.appendChild(svgEl("text", { x: links + 22, y: p.y + 23, class: "sk-titel" },
     kuerzen(k.kurztitel || k.titel, p.w - (links - p.x) - 30, 13, true)));
-  a.appendChild(svgEl("text", { x: links, y: p.y + 41, "font-size": 11.5, fill: k.stufe === "rot" ? "#ff9b95" : "#adbac7" },
-    kuerzen(k.kurz, p.w - (links - p.x) * 2, 11.5)));
-  // Bots: dritte Zeile mit dem letzten Lauf, rechts davon der Modus (PAPER, DRY_RUN, …) als Abzeichen
+  a.appendChild(svgEl("text", { x: links, y: p.y + 41, class: "sk-kurz" }, kuerzen(k.kurz, p.w - (links - p.x) * 2, 11.5)));
+  // Bots: dritte Zeile mit dem letzten Lauf, rechts davon der Modus (PAPER, VORSCHLAG, …) als Abzeichen
   let modusBreite = 0;
   if (k.modus && p.h >= 60) {
     modusBreite = String(k.modus).length * 5.8 + 10;
-    const farbe = { paper: ["#3d2a00", "#d29922"], echt: ["#f85149", "#ffffff"], probe: ["#12304d", "#58a6ff"] }[modusKlasse(k.modus)];
-    a.appendChild(svgEl("rect", { x: p.x + p.w - modusBreite - 8, y: p.y + 45, width: modusBreite, height: 16, rx: 8, fill: farbe[0] }));
-    a.appendChild(svgEl("text", { x: p.x + p.w - modusBreite / 2 - 8, y: p.y + 57, "text-anchor": "middle", "font-size": 9,
-      "font-weight": 700, fill: farbe[1] }, k.modus));
+    const art = modusKlasse(k.modus);
+    a.appendChild(svgEl("rect", { x: p.x + p.w - modusBreite - 8, y: p.y + 45, width: modusBreite, height: 16, rx: 8,
+      class: `sk-modus ${art}` }));
+    a.appendChild(svgEl("text", { x: p.x + p.w - modusBreite / 2 - 8, y: p.y + 57, "text-anchor": "middle",
+      class: `sk-modus-text ${art}` }, k.modus));
   }
   if (k.letzter_lauf && p.h >= 60) {
     const ergebnis = k.lauf_ok === false ? "✕" : "✓";
-    a.appendChild(svgEl("text", { x: links, y: p.y + 57, "font-size": 11, fill: "#8b949e" },
+    a.appendChild(svgEl("text", { x: links, y: p.y + 57, class: "sk-klein" },
       kuerzen(`${relativ(k.letzter_lauf)} ${ergebnis}`, p.w - (links - p.x) - modusBreite - 14, 11)));
   }
   svg.appendChild(a);
@@ -160,105 +106,37 @@ function zeichneSkizze(kaesten) {
   // Rahmen "Docker" um die Container, Server darüber
   const rahmen = p._rahmen;
   linie(svg, p.server, rahmen);
-  svg.appendChild(svgEl("rect", { x: rahmen.x, y: rahmen.y, width: rahmen.w, height: rahmen.h, rx: 12, fill: "none",
-    stroke: "#30363d", "stroke-dasharray": "4 4" }));
-  svg.appendChild(svgEl("text", { x: rahmen.x + 10, y: rahmen.y + 15, "font-size": 10.5, fill: "#8b949e" }, "Docker-Container"));
-
+  svg.appendChild(svgEl("rect", { x: rahmen.x, y: rahmen.y, width: rahmen.w, height: rahmen.h, rx: 12, class: "sk-rahmen" }));
+  svg.appendChild(svgEl("text", { x: rahmen.x + 10, y: rahmen.y + 15, class: "sk-beschriftung" }, "Docker-Container"));
   for (const [a, b] of p._linien) if (p[a] && p[b]) linie(svg, p[a], p[b]);
-  svg.appendChild(svgEl("text", { x: LINKS, y: p._absicherung, "font-size": 10.5, fill: "#8b949e" },
-    "Absicherung ausserhalb des Servers"));
+  svg.appendChild(svgEl("text", { x: LINKS, y: p._absicherung, class: "sk-beschriftung" }, "Absicherung ausserhalb des Servers"));
 
   // Kästen, die die Skizze (noch) nicht kennt, erscheinen trotzdem unten in den Einzelheiten
   for (const k of kaesten) if (p[k.id]) zeichneKasten(svg, k, p[k.id]);
 }
 
-// ---------------------------------------------------------------- Einzelheiten (Karten unter der Skizze)
-function el(tag, attrs = {}, text = "") {
-  const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
-  if (text !== "") e.textContent = text;
-  return e;
-}
-
-function karte(k) {
-  const art = el("article", { id: `k-${k.id}`, class: `karte ${k.stufe}` });
-  const h = el("h3");
-  h.appendChild(el("span", { class: "punkt" }, SYMBOL[k.stufe] || "?"));
+// ---------------------------------------------------------------- Einzelheiten unter der Skizze
+function systemKarte(k) {
+  const art = el("article", { id: `k-${k.id}`, class: `system-karte karte ${k.stufe}` });
+  const h = el("h3", { class: "status" });
+  h.appendChild(punkt(k.stufe));
   h.appendChild(el("span", {}, k.titel));
-  if (k.modus) h.appendChild(el("span", { class: `modus ${modusKlasse(k.modus)}` }, k.modus));
   art.appendChild(h);
   // grau hat verschiedene Gründe ("noch nicht eingerichtet", "offline – kein Fehler") – den echten zeigen
-  art.appendChild(el("p", { class: "stufe" }, k.stufe === "grau" ? `grau – ${k.kurz}` : STUFE_TEXT[k.stufe] || k.stufe));
+  art.appendChild(el("p", { class: "klein gedaempft" }, k.stufe === "grau" ? `grau – ${k.kurz}` : STUFE_TEXT[k.stufe] || k.stufe));
   if (k.gruende && k.gruende.length) {
     const ul = el("ul", { class: "gruende" });
     k.gruende.forEach((g) => ul.appendChild(el("li", {}, g)));
     art.appendChild(ul);
   }
-  const dl = el("dl", { class: "werte" });
-  (k.zeilen || []).forEach((z) => {
-    dl.appendChild(el("dt", {}, z.t));
-    dl.appendChild(el("dd", {}, z.z != null ? zeitText(z) : z.w ?? "–"));
-  });
-  art.appendChild(dl);
+  art.appendChild(werteListe(k.zeilen));
   return art;
 }
 
-function zusammenfassung(zaehler) {
-  const grau = zaehler.grau ? ` · ${zaehler.grau} noch nicht eingerichtet` : "";
-  if (!zaehler.rot && !zaehler.gelb) return "Alles läuft" + grau;
-  const teile = [];
-  if (zaehler.rot) teile.push(`${zaehler.rot} rot`);
-  if (zaehler.gelb) teile.push(`${zaehler.gelb} gelb`);
-  return teile.join(" · ") + grau;
-}
-
-// ---------------------------------------------------------------- Laden und Alter prüfen
-function zeigen() {
+function zeigeSystem(daten) {
   const kaesten = daten.kaesten || [];
   zeichneSkizze(kaesten);
-  const details = $("details");
+  const details = $("system-details");
   details.innerHTML = "";
-  kaesten.forEach((k) => details.appendChild(karte(k)));
-  $("zusammenfassung").textContent = zusammenfassung(daten.zaehler || {});
-  const warnung = $("paper-warnung");
-  warnung.hidden = !(daten.warnungen && daten.warnungen.length);
-  warnung.textContent = (daten.warnungen || []).join(" ");
-  $("stand").textContent = `${zeit(daten.erzeugt)} · ${daten.erzeugt_utc}`;
+  kaesten.filter((k) => !k.id.startsWith("bot-")).forEach((k) => details.appendChild(systemKarte(k)));
 }
-
-function alterPruefen() {
-  const banner = $("veraltet");
-  if (!daten) {
-    document.body.classList.add("veraltet");
-    banner.hidden = false;
-    banner.textContent = ladeFehler || "Noch keine Daten.";
-    return;
-  }
-  const alter = Date.now() / 1000 - daten.erzeugt;
-  const alt = alter > VERALTET_NACH_SEKUNDEN;
-  document.body.classList.toggle("veraltet", alt);
-  banner.hidden = !alt && !ladeFehler;
-  const utc = new Date(daten.erzeugt * 1000).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
-  banner.textContent = alt ? `Daten veraltet, Stand ${utc} UTC (${relativ(daten.erzeugt)}). ${ladeFehler}`.trim() : ladeFehler;
-}
-
-async function laden() {
-  try {
-    const antwort = await fetch("/api/system", { cache: "no-store" });
-    const neu = await antwort.json();
-    if (neu.fehlt) {
-      ladeFehler = neu.grund || "Keine Daten.";
-    } else {
-      daten = neu;
-      ladeFehler = "";
-      zeigen();
-    }
-  } catch (e) {
-    ladeFehler = "Dashboard nicht erreichbar (Tailscale an?).";
-  }
-  alterPruefen();
-}
-
-laden();
-setInterval(laden, NEU_LADEN_SEKUNDEN * 1000);
-setInterval(alterPruefen, 10 * 1000);

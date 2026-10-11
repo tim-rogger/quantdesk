@@ -73,6 +73,20 @@ def env_gesetzt(pfad: str, schluessel: str) -> bool:
     return False
 
 
+def erwartetes_konto(pfad: str) -> str | None:
+    """IBKR_ACCOUNT_ID aus der .env – die einzige Zeile, deren WERT der Sammler liest. Sie ist kein Passwort,
+    wird aber trotzdem nur maskiert angezeigt (bewerten.maskiere_konto)."""
+    try:
+        with open(pfad, encoding="utf-8") as f:
+            for z in f:
+                name, _, wert = z.strip().partition("=")
+                if name.strip() == "IBKR_ACCOUNT_ID":
+                    return wert.strip().strip('"').strip("'").upper() or None
+    except OSError:
+        pass
+    return None
+
+
 def lies_jsonl_ende(pfad: str, anzahl: int = 50) -> list[dict]:
     """Die letzten `anzahl` Zeilen einer JSONL-Datei. Kaputte Zeilen werden übersprungen."""
     with open(pfad, encoding="utf-8") as f:
@@ -308,16 +322,34 @@ def _lotse(deploy: str, eintrag: dict, out: dict, jetzt: float) -> dict:
     except OSError:
         out["fehler"] = "Tagebuch nicht lesbar"
         return out
-    try:
-        ausfuehrungen = lies_jsonl_ende(os.path.join(deploy, eintrag.get("ausfuehrungen_datei", "")), 100000)
-    except OSError:
-        ausfuehrungen = []  # noch nie etwas ausgeführt (z.B. im VORSCHLAG-Modus)
-    status, laeufe = formate.lotse_tagebuch(eintraege, ausfuehrungen, jetzt, eintrag.get("zeit_ohne_zone"),
-                                            eintrag.get("lauf_hoechstens_minuten", 30))
+    ausfuehrungen = _jsonl_oder_leer(os.path.join(deploy, eintrag.get("ausfuehrungen_datei", "")))
+    orders = _jsonl_oder_leer(os.path.join(deploy, eintrag.get("orders_datei", "")))
+    budget = _lotse_budget(os.path.join(deploy, eintrag.get("config_datei", "")))
+    status, laeufe = formate.lotse_tagebuch(eintraege, ausfuehrungen, orders, jetzt, eintrag.get("zeit_ohne_zone"),
+                                            eintrag.get("lauf_hoechstens_minuten", 30), budget)
     # bewerten.py liest die übersetzten Felder unter diesen Namen
-    out["eintrag"] = eintrag | {"modus_feld": "modus", "investiert_feld": "investiert", "positionen_feld": "positionen"}
+    out["eintrag"] = eintrag | {"modus_feld": "modus", "investiert_feld": "investiert", "positionen_feld": "positionen",
+                                "budget_feld": "budget"}
     out["status"], out["laeufe"] = status, laeufe
     return out
+
+
+def _jsonl_oder_leer(pfad: str) -> list[dict]:
+    """Ganze JSONL-Datei. Fehlt sie (z.B. noch nie etwas ausgeführt), ist das kein Fehler: leere Liste."""
+    try:
+        return lies_jsonl_ende(pfad, 100000)
+    except OSError:
+        return []
+
+
+def _lotse_budget(pfad: str) -> float | None:
+    """budget_chf aus Lotses config.toml ([grenzen]). Nicht lesbar: None ("unbekannt")."""
+    try:
+        with open(pfad, "rb") as f:
+            budget = tomllib.load(f).get("grenzen", {}).get("budget_chf")
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    return float(budget) if isinstance(budget, (int, float)) and not isinstance(budget, bool) else None
 
 
 # ====================================================================== Backup und Totmannschalter
@@ -368,7 +400,7 @@ def sammeln(deploy: str, speicher: Zwischenspeicher, merker: dict) -> dict:
         if ts.get("_dns") else None
     con = container(merker, jetzt)
     gateway_ip = (con.get("ib-gateway") or {}).get("_ip")
-    ib = speicher.hole("ib", 2 * 60, lambda: ib_gateway(gateway_ip))
+    ib = speicher.hole("ib", 2 * 60, lambda: ib_gateway(gateway_ip)) | {"erwartet": erwartetes_konto(env_pfad)}
     eintraege = registry(os.path.join(deploy, "bots.toml"))
     bots = [bot(deploy, e, jetzt) for e in eintraege]
     logs_8_tage = speicher.hole("logs", 10 * 60, lambda: bot_logs(8 * 24))

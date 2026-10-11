@@ -382,11 +382,7 @@ def bewerte_ib(c: dict | None, ib: dict, jetzt: float) -> tuple[dict, dict, list
     elif not konten:
         konto.rot("keine Kontonummer gemeldet")
     else:
-        fremd = [k for k in konten if not ist_paper_konto(k)]
-        if fremd:
-            konto.rot("kein Paper-Konto")
-            warnungen.append(f"IBKR meldet {maskiere_konto(fremd[0])} – kein Paper-Konto! Nichts handeln lassen, "
-                             "Gateway-Login prüfen.")
+        warnungen += pruefe_konto(konten, ib.get("erwartet"), konto)
     if alt and konten is not None:
         konto.gelb("Prüfung veraltet")
 
@@ -397,12 +393,37 @@ def bewerte_ib(c: dict | None, ib: dict, jetzt: float) -> tuple[dict, dict, list
     if ib.get("fehler"):
         api_zeilen.append(zeile("Meldung", ib["fehler"]))
     paper = bool(konten) and all(ist_paper_konto(k) for k in konten)
+    erwartet = ib.get("erwartet")
     konto_zeilen = [zeile("Konto", maskiert), zeile("Modus", "Paper" if paper else "NICHT Paper" if konten else "–"),
+                    zeile("Erwartet (.env)", maskiere_konto(erwartet) if erwartet else "nicht gesetzt"),
+                    zeile("Geprüft gegen", "genaue Kontonummer" if erwartet else "nur „beginnt mit DU“"),
                     zeitzeile]
     api_kasten = kasten("tws-api", "TWS-API :4004", api, api.gruende[0] if api.gruende else "antwortet", api_zeilen)
     konto_kurz = konto.gruende[0] if konto.gruende else f"{maskiert} · Paper"
-    konto_kasten = kasten("ibkr", "IBKR Paper-Konto", konto, konto_kurz, konto_zeilen)
+    konto_kasten = kasten("ibkr", "IBKR-Konto", konto, konto_kurz, konto_zeilen, paper=paper and konto.stufe != ROT)
     return api_kasten, konto_kasten, warnungen
+
+
+def pruefe_konto(konten: list[str], erwartet: str | None, konto: Befund) -> list[str]:
+    """Die wichtigste Prüfung: handelt das Gateway wirklich mit dem Paper-Konto aus der .env?
+
+    1. Beginnt eine gemeldete Nummer nicht mit DU -> rot, "kein Paper-Konto" (Warnung ganz oben).
+    2. Ist IBKR_ACCOUNT_ID gesetzt und wird nicht gemeldet -> rot, "anderes Konto als in .env".
+    3. Ist IBKR_ACCOUNT_ID nicht gesetzt -> gelb: geprüft wurde nur "beginnt mit DU".
+    Liefert die Warnungen für ganz oben.
+    """
+    fremd = [k for k in konten if not ist_paper_konto(k)]
+    if fremd:
+        konto.rot("kein Paper-Konto")
+        return [f"IBKR meldet {maskiere_konto(fremd[0])} – kein Paper-Konto! Nichts handeln lassen, Gateway-Login prüfen."]
+    if not erwartet:
+        konto.gelb("IBKR_ACCOUNT_ID nicht gesetzt – nur auf DU geprüft")
+        return []
+    if erwartet not in konten:
+        konto.rot("anderes Konto als in .env")
+        return [f"IBKR meldet {maskiere_konto(konten[0])}, erwartet ist {maskiere_konto(erwartet)} (IBKR_ACCOUNT_ID). "
+                "Gateway-Login prüfen."]
+    return []
 
 
 # ====================================================================== Bots
@@ -415,7 +436,8 @@ def bewerte_bot(eintrag: dict, daten: dict, jetzt: float) -> dict:
     uhrzeiten = list(eintrag.get("laeufe", []))
     if not eintrag.get("eingerichtet", False):
         return kasten(kid, name, Befund(GRAU), "noch nicht eingerichtet",
-                      [zeile("Strategie", eintrag.get("strategie"))], modus=None, container=eintrag.get("container"))
+                      [zeile("Strategie", eintrag.get("strategie"))], modus=None, container=eintrag.get("container"),
+                      strategie_kurz=eintrag.get("strategie_kurz"))
 
     b = Befund()
     status = daten.get("status")
@@ -428,6 +450,7 @@ def bewerte_bot(eintrag: dict, daten: dict, jetzt: float) -> dict:
 
     modus = feld(status, eintrag.get("modus_feld", "mode"))
     investiert = feld(status, eintrag.get("investiert_feld", "c_account.invested"))
+    budget = feld(status, eintrag.get("budget_feld", "c_account.budget"))
     positionen = feld(status, eintrag.get("positionen_feld", "c_account.positions"))
 
     letzter = laeufe[-1] if laeufe else None
@@ -459,14 +482,18 @@ def bewerte_bot(eintrag: dict, daten: dict, jetzt: float) -> dict:
         zeile("Geplant", ", ".join(uhrzeiten) + f" ({zone}, Mo–Fr, Feiertage nicht berücksichtigt)" if uhrzeiten else "–"),
         zeile("Nächster Lauf", zeit=naechster, zone=zone) if naechster else zeile("Nächster Lauf", "–"),
         zeile("Investiert", geld(investiert, waehrung)),
+        zeile("Budget", geld(budget, waehrung) if budget else "–"),
         zeile("Offene Positionen", anzahl),
-    ]
+    ] + [zeile("Letzter Vorschlag", text) for text in (status or {}).get("vorschlaege", [])] \
+      + [zeile("Kurs", text) for text in (status or {}).get("kurse", [])]
     if b.gruende:
         kurz = b.gruende[0]
     else:
         kurz = f"{geld(investiert, waehrung)} · {anzahl} Pos."
     return kasten(kid, name, b, kurz, zeilen, modus=str(modus) if modus else None, letzter_lauf=lauf_zeit,
-                  lauf_ok=ok is True if letzter else None, container=eintrag.get("container"))
+                  lauf_ok=ok is True if letzter else None, container=eintrag.get("container"),
+                  strategie_kurz=eintrag.get("strategie_kurz"), investiert=geld(investiert, waehrung),
+                  naechster_lauf=naechster, zone=zone, detail=eintrag.get("detail"))
 
 
 # ====================================================================== Backup und Totmannschalter
@@ -520,6 +547,23 @@ def bot_container(bots: list[dict], container: dict, jetzt: float) -> list[dict]
     return out
 
 
+def ampel(kaesten: list[dict]) -> dict:
+    """Ein Satz für ganz oben auf der Übersicht. Die schlechteste Farbe bestimmt ihn.
+    Grau zählt nicht mit: "noch nicht eingerichtet" ist kein Fehler."""
+    rot = [k for k in kaesten if k["stufe"] == ROT]
+    gelb = [k for k in kaesten if k["stufe"] == GELB]
+    if rot:
+        stufe, satz = ROT, "Etwas ist aus"
+    elif len(gelb) == 1:
+        stufe, satz = GELB, "1 Sache stimmt nicht"
+    elif gelb:
+        stufe, satz = GELB, f"{len(gelb)} Sachen stimmen nicht"
+    else:
+        stufe, satz = GRUEN, "Alles läuft"
+    was = [f"{k['titel']}: {k['gruende'][0] if k['gruende'] else k['kurz']}" for k in (rot + gelb)[:3]]
+    return {"stufe": stufe, "satz": satz, "was": was}
+
+
 # ====================================================================== alles zusammen
 def bewerten(roh: dict) -> dict:
     """Rohdaten (messen.sammeln) -> Inhalt von system.json."""
@@ -549,6 +593,7 @@ def bewerten(roh: dict) -> dict:
         "erzeugt_utc": dt.datetime.fromtimestamp(jetzt, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "warnungen": warnungen,
         "zaehler": zaehler,
+        "ampel": ampel(kaesten),
         "kaesten": kaesten,
     })
 

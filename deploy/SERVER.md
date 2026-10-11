@@ -270,12 +270,14 @@ Danach pingt der Bot nach jedem erfolgreichen 10:00-Lauf. Bei einem Fehler melde
 US-Feiertagen schickt er ein „kein Handelstag“. Bleibt der Ping bis 11:00 New York aus, alarmiert Healthchecks.io.
 Zusätzlich schickt der Server selbst um 11:00 New York einen Push, wenn der Handelslauf nicht geklappt hat.
 
-## 12. Systemseite (/system): zeigt, ob alles läuft
+## 12. Die App: Übersicht, Bots, System
 
-Eine zweite Seite im Dashboard: deine Infrastruktur als Skizze, jeder Kasten grün, gelb, rot oder grau
-(grau = noch nicht eingerichtet). Die Daten sammelt ein kleiner Dienst **auf dem Server selbst**, nicht im
-Dashboard-Container. Das Dashboard liest nur die Datei, die er schreibt (`state/system/system.json`). Die Seite
-hat **keine Knöpfe**. Neu starten machst du weiterhin im Terminal.
+Das Dashboard ist eine App mit drei Reitern unten: **Übersicht** (Ampel, eine Karte pro Bot, Absicherung),
+**Bots** (jeder Bot im Detail, Strategie C mit Kapitalkurve und Kriterien) und **System** (die Infrastruktur als
+Skizze). Jeder Kasten ist grün, gelb, rot oder grau (grau = noch nicht eingerichtet). Die Daten sammelt ein kleiner
+Dienst **auf dem Server selbst**, nicht im Dashboard-Container. Das Dashboard liest nur die Datei, die er schreibt
+(`state/system/system.json`). Die App ist **nur zum Anschauen**; einzige Aktion bleibt die alte Notbremse (STOP-ALL)
+bei Strategie C. Neu starten machst du weiterhin im Terminal.
 
 Einmalig einrichten (nach `git pull`):
 ```bash
@@ -286,7 +288,9 @@ $ sudo cp deploy/systemstatus.service /etc/systemd/system/quantdesk-systemstatus
 $ sudo systemctl daemon-reload && sudo systemctl enable --now quantdesk-systemstatus
 $ cd deploy && docker compose up -d                    # Dashboard bekommt den neuen (nur lesenden) Ordner
 ```
-Ansehen: `https://quantdesk.dein-tailnet.ts.net/system` (oder im Dashboard oben rechts auf **System ›**).
+Ansehen: `https://quantdesk.dein-tailnet.ts.net` (Port 443, also ohne `:8443` – dort läuft ntfy). Im Handy-Browser
+öffnen → **„Zum Home-Bildschirm“**. Eine Kachel reicht für alle drei Reiter. War schon eine alte Kachel da: löschen
+und neu anlegen, sonst bleibt das alte Icon.
 
 - Läuft der Sammler? `systemctl status quantdesk-systemstatus`, Meldungen: `journalctl -u quantdesk-systemstatus -n 50`
 - Seite grau abgeblendet mit „Daten veraltet“ → der Sammler schreibt nicht mehr. `sudo systemctl restart quantdesk-systemstatus`
