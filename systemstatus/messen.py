@@ -20,7 +20,7 @@ import time
 import tomllib
 import urllib.request
 
-from systemstatus import tws
+from systemstatus import formate, tws
 
 COMPOSE_PROJEKT = "quantdesk"
 DASHBOARD_URL = "http://127.0.0.1:8080/healthz"   # wie in docker-compose.yml veröffentlicht
@@ -273,14 +273,16 @@ def registry(pfad: str) -> list[dict]:
         return list(tomllib.load(f).get("bot", []))
 
 
-def bot(state: str, eintrag: dict) -> dict:
-    """Status- und Lauf-Datei eines Bots lesen (nur lesen!). nan/inf werden hier NICHT entfernt –
-    bewerten.py soll sie sehen und rot melden."""
+def bot(deploy: str, eintrag: dict, jetzt: float | None = None) -> dict:
+    """Dateien eines Bots lesen (nur lesen!). Pfade in der Registry sind relativ zu deploy/.
+    nan/inf werden hier NICHT entfernt – bewerten.py soll sie sehen und rot melden."""
     out: dict = {"eintrag": eintrag, "status": None, "laeufe": [], "fehler": ""}
     if not eintrag.get("eingerichtet"):
         return out
-    status_pfad = os.path.join(state, eintrag.get("status_datei", ""))
-    laeufe_pfad = os.path.join(state, eintrag.get("laeufe_datei", ""))
+    if eintrag.get("format") == "lotse-tagebuch":
+        return _lotse(deploy, eintrag, out, time.time() if jetzt is None else jetzt)
+    status_pfad = os.path.join(deploy, eintrag.get("status_datei", ""))
+    laeufe_pfad = os.path.join(deploy, eintrag.get("laeufe_datei", ""))
     try:
         with open(status_pfad, encoding="utf-8") as f:
             out["status"] = json.load(f)
@@ -294,6 +296,27 @@ def bot(state: str, eintrag: dict) -> dict:
         pass
     except OSError:
         out["fehler"] = out["fehler"] or "Lauf-Protokoll nicht lesbar"
+    return out
+
+
+def _lotse(deploy: str, eintrag: dict, out: dict, jetzt: float) -> dict:
+    """Lotse hat keine Statusdatei, sondern ein Tagebuch (siehe formate.lotse_tagebuch)."""
+    try:
+        eintraege = lies_jsonl_ende(os.path.join(deploy, eintrag.get("laeufe_datei", "")), 500)
+    except FileNotFoundError:
+        eintraege = []  # noch nie gelaufen -> bewerten.py meldet gelb "noch kein Lauf"
+    except OSError:
+        out["fehler"] = "Tagebuch nicht lesbar"
+        return out
+    try:
+        ausfuehrungen = lies_jsonl_ende(os.path.join(deploy, eintrag.get("ausfuehrungen_datei", "")), 100000)
+    except OSError:
+        ausfuehrungen = []  # noch nie etwas ausgeführt (z.B. im VORSCHLAG-Modus)
+    status, laeufe = formate.lotse_tagebuch(eintraege, ausfuehrungen, jetzt, eintrag.get("zeit_ohne_zone"),
+                                            eintrag.get("lauf_hoechstens_minuten", 30))
+    # bewerten.py liest die übersetzten Felder unter diesen Namen
+    out["eintrag"] = eintrag | {"modus_feld": "modus", "investiert_feld": "investiert", "positionen_feld": "positionen"}
+    out["status"], out["laeufe"] = status, laeufe
     return out
 
 
@@ -337,7 +360,6 @@ class Zwischenspeicher:
 
 def sammeln(deploy: str, speicher: Zwischenspeicher, merker: dict) -> dict:
     jetzt = time.time()
-    state = os.path.join(deploy, "state")
     env_pfad = os.path.join(deploy, ".env")
     srv = server()
     srv["sicherheitsupdates"] = speicher.hole("updates", 30 * 60, sicherheitsupdates)
@@ -348,7 +370,7 @@ def sammeln(deploy: str, speicher: Zwischenspeicher, merker: dict) -> dict:
     gateway_ip = (con.get("ib-gateway") or {}).get("_ip")
     ib = speicher.hole("ib", 2 * 60, lambda: ib_gateway(gateway_ip))
     eintraege = registry(os.path.join(deploy, "bots.toml"))
-    bots = [bot(state, e) for e in eintraege]
+    bots = [bot(deploy, e, jetzt) for e in eintraege]
     logs_8_tage = speicher.hole("logs", 10 * 60, lambda: bot_logs(8 * 24))
     logs_48_h = "\n".join(z for z in logs_8_tage.splitlines()
                           if (iso_zu_unix(z.split(" ", 1)[0]) or 0) > jetzt - 48 * 3600)

@@ -47,10 +47,14 @@ function zeitText(zeile) {
 }
 
 // ---------------------------------------------------------------- Skizze
-// Feste Plätze im Koordinatensystem der Skizze (360 breit). Die Bots stehen untereinander unter "bot";
-// ihre Anzahl kommt aus der Registry, deshalb wird ihr Platz ausgerechnet.
+// Koordinaten der Skizze: 360 breit. Oben fest: Geräte, Tunnel, Server.
+// Im Docker-Rahmen zwei Spalten:
+//   links  je Bot sein Container und direkt darunter der Bot (Reihenfolge und Anzahl aus der Registry)
+//   rechts die Infrastruktur: ntfy, dashboard, ib-gateway und dessen TWS-API
+// Darunter das IBKR-Konto (ausserhalb des Servers) und die Absicherung.
 const B = 156;   // Breite eines halben Kastens
 const LINKS = 16, RECHTS = 188;
+const INNEN = 6; // Abstand der Kästen vom Docker-Rahmen
 
 function plaetze(kaesten) {
   const p = {
@@ -58,25 +62,37 @@ function plaetze(kaesten) {
     laptop: { x: RECHTS, y: 8, w: B, h: 50 },
     tailscale: { x: 50, y: 88, w: 260, h: 50, rund: true },
     server: { x: LINKS, y: 168, w: 328, h: 54 },
-    "c-ntfy": { x: LINKS + 6, y: 270, w: B - 12, h: 50 },
-    "c-dashboard": { x: RECHTS + 6, y: 270, w: B - 12, h: 50 },
-    "c-bot": { x: LINKS + 6, y: 330, w: B - 12, h: 50 },
-    "c-ib-gateway": { x: RECHTS + 6, y: 330, w: B - 12, h: 50 },
-    "tws-api": { x: RECHTS, y: 416, w: B, h: 44, rund: true },
-    ibkr: { x: RECHTS, y: 490, w: B, h: 58 },
+    "c-ntfy": { x: RECHTS + INNEN, y: 270, w: B - 2 * INNEN, h: 50 },
+    "c-dashboard": { x: RECHTS + INNEN, y: 330, w: B - 2 * INNEN, h: 50 },
+    "c-ib-gateway": { x: RECHTS + INNEN, y: 390, w: B - 2 * INNEN, h: 50 },
+    "tws-api": { x: RECHTS + INNEN, y: 456, w: B - 2 * INNEN, h: 44, rund: true },
   };
-  let y = 416;
-  kaesten.filter((k) => k.id.startsWith("bot-")).forEach((k) => { p[k.id] = { x: LINKS, y, w: B, h: 64 }; y += 76; });
-  const unten = Math.max(y, 560) + 30;
+  const linien = [["iphone", "tailscale"], ["laptop", "tailscale"], ["tailscale", "server"],
+    ["c-ib-gateway", "tws-api"]];
+  const vorhanden = new Set(kaesten.map((k) => k.id));
+  let y = 270;
+  for (const bot of kaesten.filter((k) => k.id.startsWith("bot-"))) {
+    const c = bot.container ? `c-${bot.container}` : null;
+    if (c && vorhanden.has(c) && !p[c]) {
+      p[c] = { x: LINKS + INNEN, y, w: B - 2 * INNEN, h: 50 };
+      y += 60;
+    }
+    p[bot.id] = { x: LINKS + INNEN, y, w: B - 2 * INNEN, h: 64 };
+    if (c && p[c]) linien.push([c, bot.id]);
+    y += 64 + 14;
+  }
+  const rahmenUnten = Math.max(y - 14, 500) + 12;
+  p._rahmen = { x: LINKS - 4, y: 248, w: 336, h: rahmenUnten - 248 };
+  p.ibkr = { x: RECHTS, y: rahmenUnten + 30, w: B, h: 58 };
+  linien.push(["tws-api", "ibkr"]);
+  const unten = p.ibkr.y + p.ibkr.h + 40;
   p.backup = { x: LINKS, y: unten, w: B, h: 54 };
   p.totmann = { x: RECHTS, y: unten, w: B, h: 54 };
   p._hoehe = unten + 54 + 8;
   p._absicherung = unten - 10;
+  p._linien = linien;
   return p;
 }
-
-const VERBINDUNGEN = [["iphone", "tailscale"], ["laptop", "tailscale"], ["tailscale", "server"],
-  ["c-ib-gateway", "tws-api"], ["tws-api", "ibkr"]];
 
 function svgEl(tag, attrs = {}, text = "") {
   const e = document.createElementNS(SVG, tag);
@@ -121,16 +137,16 @@ function zeichneKasten(svg, k, p) {
   // Bots: dritte Zeile mit dem letzten Lauf, rechts davon der Modus (PAPER, DRY_RUN, …) als Abzeichen
   let modusBreite = 0;
   if (k.modus && p.h >= 60) {
-    modusBreite = String(k.modus).length * 6.5 + 12;
+    modusBreite = String(k.modus).length * 5.8 + 10;
     const farbe = { paper: ["#3d2a00", "#d29922"], echt: ["#f85149", "#ffffff"], probe: ["#12304d", "#58a6ff"] }[modusKlasse(k.modus)];
     a.appendChild(svgEl("rect", { x: p.x + p.w - modusBreite - 8, y: p.y + 45, width: modusBreite, height: 16, rx: 8, fill: farbe[0] }));
-    a.appendChild(svgEl("text", { x: p.x + p.w - modusBreite / 2 - 8, y: p.y + 57, "text-anchor": "middle", "font-size": 10,
+    a.appendChild(svgEl("text", { x: p.x + p.w - modusBreite / 2 - 8, y: p.y + 57, "text-anchor": "middle", "font-size": 9,
       "font-weight": 700, fill: farbe[1] }, k.modus));
   }
   if (k.letzter_lauf && p.h >= 60) {
-    const ergebnis = k.lauf_ok === false ? "gescheitert" : "ok";
+    const ergebnis = k.lauf_ok === false ? "✕" : "✓";
     a.appendChild(svgEl("text", { x: links, y: p.y + 57, "font-size": 11, fill: "#8b949e" },
-      kuerzen(`${relativ(k.letzter_lauf)} · ${ergebnis}`, p.w - (links - p.x) - modusBreite - 14, 11)));
+      kuerzen(`${relativ(k.letzter_lauf)} ${ergebnis}`, p.w - (links - p.x) - modusBreite - 14, 11)));
   }
   svg.appendChild(a);
 }
@@ -141,20 +157,14 @@ function zeichneSkizze(kaesten) {
   const p = plaetze(kaesten);
   svg.setAttribute("viewBox", `0 0 360 ${p._hoehe}`);
 
-  // Rahmen "Docker" um die vier Container, Server darüber
-  const rahmen = { x: LINKS - 4, y: 248, w: 336, h: 142 };
+  // Rahmen "Docker" um die Container, Server darüber
+  const rahmen = p._rahmen;
   linie(svg, p.server, rahmen);
   svg.appendChild(svgEl("rect", { x: rahmen.x, y: rahmen.y, width: rahmen.w, height: rahmen.h, rx: 12, fill: "none",
     stroke: "#30363d", "stroke-dasharray": "4 4" }));
   svg.appendChild(svgEl("text", { x: rahmen.x + 10, y: rahmen.y + 15, "font-size": 10.5, fill: "#8b949e" }, "Docker-Container"));
 
-  for (const [a, b] of VERBINDUNGEN) if (p[a] && p[b]) linie(svg, p[a], p[b]);
-  // Bots hängen am Container "bot": eine Linie nach unten an der linken Seite
-  const bots = kaesten.filter((k) => k.id.startsWith("bot-"));
-  if (bots.length) {
-    const x = p["c-bot"].x + p["c-bot"].w / 2, letzter = p[bots[bots.length - 1].id];
-    svg.appendChild(svgEl("path", { d: `M${x},${p["c-bot"].y + p["c-bot"].h} V${letzter.y}`, stroke: "#30363d", "stroke-width": 2 }));
-  }
+  for (const [a, b] of p._linien) if (p[a] && p[b]) linie(svg, p[a], p[b]);
   svg.appendChild(svgEl("text", { x: LINKS, y: p._absicherung, "font-size": 10.5, fill: "#8b949e" },
     "Absicherung ausserhalb des Servers"));
 

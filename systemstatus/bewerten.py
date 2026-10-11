@@ -415,7 +415,7 @@ def bewerte_bot(eintrag: dict, daten: dict, jetzt: float) -> dict:
     uhrzeiten = list(eintrag.get("laeufe", []))
     if not eintrag.get("eingerichtet", False):
         return kasten(kid, name, Befund(GRAU), "noch nicht eingerichtet",
-                      [zeile("Strategie", eintrag.get("strategie"))], modus=None)
+                      [zeile("Strategie", eintrag.get("strategie"))], modus=None, container=eintrag.get("container"))
 
     b = Befund()
     status = daten.get("status")
@@ -466,7 +466,7 @@ def bewerte_bot(eintrag: dict, daten: dict, jetzt: float) -> dict:
     else:
         kurz = f"{geld(investiert, waehrung)} · {anzahl} Pos."
     return kasten(kid, name, b, kurz, zeilen, modus=str(modus) if modus else None, letzter_lauf=lauf_zeit,
-                  lauf_ok=ok is True if letzter else None)
+                  lauf_ok=ok is True if letzter else None, container=eintrag.get("container"))
 
 
 # ====================================================================== Backup und Totmannschalter
@@ -505,6 +505,21 @@ def bewerte_totmann(tm: dict) -> dict:
                   kurztitel="Totmannschalter")
 
 
+def bot_container(bots: list[dict], container: dict, jetzt: float) -> list[dict]:
+    """Container, die ein Bot in der Registry nennt (`container = "lotse"`) und die nicht ohnehin schon
+    einen festen Kasten haben. Ein Bot, der noch nicht eingerichtet ist, hat auch noch keinen Container: grau."""
+    out = []
+    for b in bots:
+        name = b["eintrag"].get("container")
+        if not name or name in CONTAINER or any(k["id"] == f"c-{name}" for k in out):
+            continue
+        if not b["eintrag"].get("eingerichtet") and not container.get(name):
+            out.append(kasten(f"c-{name}", name, Befund(GRAU), "noch nicht eingerichtet", []))
+        else:
+            out.append(bewerte_container(name, container.get(name), jetzt))
+    return out
+
+
 # ====================================================================== alles zusammen
 def bewerten(roh: dict) -> dict:
     """Rohdaten (messen.sammeln) -> Inhalt von system.json."""
@@ -524,6 +539,7 @@ def bewerten(roh: dict) -> dict:
         api,
         konto,
     ]
+    kaesten += bot_container(roh.get("bots") or [], container, jetzt)
     kaesten += [bewerte_bot(b["eintrag"], b, jetzt) for b in roh.get("bots") or []]
     kaesten += [bewerte_backup(roh.get("backup") or {}, jetzt), bewerte_totmann(roh.get("totmann") or {})]
     zaehler = {stufe: sum(k["stufe"] == stufe for k in kaesten) for stufe in (GRUEN, GELB, ROT, GRAU)}
