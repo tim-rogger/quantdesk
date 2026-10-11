@@ -57,7 +57,7 @@ h3 { font-size: 16px; margin: 0 0 8px; }
 .fuss { text-align: center; margin-top: 24px; }
 
 /* Daten älter als 2 Minuten: alles abblenden – lieber "ich weiss es nicht" als ein altes Grün */
-body.veraltet main { filter: grayscale(1); opacity: 0.4; }
+body.veraltet main, body.veraltet #paper-abzeichen { filter: grayscale(1); opacity: 0.4; }
 
 /* ------------------------------------------------------------ Kopf und Tab-Leiste */
 .kopf { position: sticky; top: 0; z-index: 10; display: flex; justify-content: space-between; align-items: center;
