@@ -124,7 +124,10 @@ services:
       <<: *quantdesk-env
       QUANTDESK_SYSTEM_FILE: /state/system/system.json
     volumes:
-      - ./state/data:/state/data       # nur den Datenordner (für STOP-ALL beschreibbar)
+      - ./state/data:/state/data:ro    # Daten von Bot C: nur lesen
+      # Notbremse: der EINZIGE Ordner, in den das Dashboard schreiben darf (Markierung HALT). Bot C sieht ihn
+      # über ./state:/state, Lotse liest ihn (siehe unten). Fortsetzen nur im Terminal (SERVER.md).
+      - ./state/halt:/state/halt
       # Systemseite /system: nur LESEN, was der Sammler auf dem Host schreibt. Kein Docker-Socket hier –
       # wer den Socket hat, ist auf dem Server praktisch root (siehe systemstatus/__init__.py).
       - ./state/system:/state/system:ro
@@ -147,10 +150,12 @@ services:
     env_file: .env                     # NTFY_TOKEN
     environment:
       LOTSE_ORDNER: /state-lotse
+      LOTSE_HALT_DATEI: /state/halt/HALT   # Notbremse, vor jedem Lauf geprüft
       NTFY_URL: http://ntfy:80
       HOME: /tmp
     volumes:
       - ./state-lotse:/state-lotse
+      - ./state/halt:/state/halt:ro    # Notbremse nur lesen
     depends_on:
       - ib-gateway
       - ntfy

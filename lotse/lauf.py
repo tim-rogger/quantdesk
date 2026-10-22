@@ -12,6 +12,9 @@ Ablauf:
   Regel 0–18  logik.plane (Tim)
   Regel 20  Stück und Limit (Tim), Limit-Order nur bis Handelsschluss
   Regel 21  VORSCHLAG: nichts an den Broker, nur Tagebuch + Push
+
+Notbremse: Liegt die Halt-Datei (LOTSE_HALT_DATEI), läuft statt all dem nur `halte`: eigene offene Orders
+stornieren, sonst nichts. Fortsetzen nur im Terminal (deploy/SERVER.md).
 """
 from __future__ import annotations
 
@@ -277,6 +280,42 @@ def _ende(tagebuch: Tagebuch, nummer: int, jetzt: dt.datetime, ergebnis: Ergebni
     return ergebnis
 
 
+# --------------------------------------------------------------------------- Notbremse
+def halt_aktiv(pfad: str | None = None) -> bool:
+    """Hat jemand die Notbremse gezogen? Die Markierung legt das Dashboard ab (auf dem Server /state/halt/HALT,
+    im Lotse-Container nur lesend eingebunden). Pfad aus der Umgebung LOTSE_HALT_DATEI."""
+    pfad = pfad if pfad is not None else os.getenv("LOTSE_HALT_DATEI", "")
+    return bool(pfad.strip()) and os.path.exists(pfad)
+
+
+def halte(cfg: dict, zieldatei: str, konto: Konto, tagebuch: Tagebuch, push: Push, jetzt: dt.datetime) -> Ergebnis:
+    """Lauf bei aktiver Notbremse: nur stoppen.
+
+    Eigene offene Orders stornieren (Referenz "lotse-…", fremde nie), nichts planen, nichts senden, nie verkaufen.
+    Im Modus VORSCHLAG liegt nichts beim Broker – dann wird er gar nicht erst angesprochen.
+    Der Lauf steht im Tagebuch (start + ende, ohne kasse), damit die Systemseite ihn sieht.
+    """
+    modus = cfg.get("modus", "?")
+    nummer = tagebuch.neuer_lauf(zieldatei, jetzt, modus)
+    storniert = 0
+    if modus != "VORSCHLAG":
+        try:
+            konto.verbinden()
+            bekannt = tagebuch.zustaende()
+            for o in konto.offene_orders():
+                konto.storniere(o)
+                if o.ref in bekannt:
+                    tagebuch.abhaken(o.ref, STORNIERT, jetzt)
+                storniert += 1
+        except KontoFehler as fehler:
+            text = f"Notbremse aktiv – Storno fehlgeschlagen: {fehler}. Offene Orders im IBKR-Portal prüfen."
+            push.sende("Lotse – Notbremse", text, wichtig=True)
+            return _ende(tagebuch, nummer, jetzt, Ergebnis(False, text))
+    text = f"Notbremse aktiv – nichts gehandelt, {storniert} offene Order(s) storniert."
+    push.sende("Lotse – Notbremse aktiv", text, wichtig=True)
+    return _ende(tagebuch, nummer, jetzt, Ergebnis(False, text))
+
+
 # --------------------------------------------------------------------------- Kommandozeile
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Lotse: ein Lauf (Standard: Modus aus config.toml)")
@@ -299,8 +338,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     ordner = os.getenv("LOTSE_ORDNER") or cfg.get("ablage", {}).get("ordner", "lotse-daten")
     try:
-        ergebnis = laufe(cfg, text, konto, Tagebuch(ordner), push, dt.datetime.now(),
-                         einzahlung_bestaetigt=args.einzahlung_bestaetigt)
+        if halt_aktiv():  # Notbremse: vor jedem Lauf prüfen
+            ergebnis = halte(cfg, text, konto, Tagebuch(ordner), push, dt.datetime.now())
+        else:
+            ergebnis = laufe(cfg, text, konto, Tagebuch(ordner), push, dt.datetime.now(),
+                             einzahlung_bestaetigt=args.einzahlung_bestaetigt)
     finally:
         konto.trennen()
     print(ergebnis.text)

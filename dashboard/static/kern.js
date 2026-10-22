@@ -152,6 +152,7 @@ async function ladeSystem() {
       zeigeBots(neu);
       zeigeSystem(neu);
     }
+    zeigeNotbremse(neu);  // notbremse.js – auch wenn die Sammler-Daten fehlen
   } catch (e) {
     ladeFehler = "Dashboard nicht erreichbar (Tailscale an?).";
   }

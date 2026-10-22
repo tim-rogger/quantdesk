@@ -545,7 +545,7 @@ NEUE_SKRIPTE = ("kern.js", "uebersicht.js", "bots.js", "system.js")
 
 
 def test_app_hat_keine_neuen_aktionen(tmp_path, monkeypatch):
-    """Nur anschauen. Die einzige Aktion der ganzen App ist die alte Notbremse (STOP-ALL) von Strategie C."""
+    """Nur anschauen. Die einzige Aktion der ganzen App ist die Notbremse (nur anhalten, tests/test_notbremse.py)."""
     app = _client(tmp_path, monkeypatch, tmp_path / "x.json").app
     schreibend = [r.path for r in app.routes if getattr(r, "methods", set()) - {"GET", "HEAD"}]
     assert schreibend == ["/api/stop"]
@@ -554,7 +554,9 @@ def test_app_hat_keine_neuen_aktionen(tmp_path, monkeypatch):
         assert "POST" not in js and "method" not in js, name
         assert ".innerHTML =" not in js.replace('innerHTML = ""', ""), name  # Daten nie als HTML
     html = (ROOT / "dashboard" / "static" / "index.html").read_text(encoding="utf-8")
-    assert html.count("<form") == 1 and 'id="stop-form"' in html and html.count("<button") == 1
+    assert html.count("<form") == 1 and 'id="stop-form"' in html
+    bremse = html.split('<section id="notbremse"')[1].split("</section>")[0]
+    assert html.count("<button") == bremse.count("<button")  # alle Knöpfe gehören zur Notbremse
 
 
 def test_eine_app_drei_reiter_und_offline_huelle(tmp_path, monkeypatch):

@@ -16,7 +16,10 @@ from collections import defaultdict
 from quantdesk.forward import C_PARAMS
 from quantdesk.journal import Fill
 
-STOP_FILE = "STOP"
+STOP_FILE = "STOP"  # alte Markierung (vor der sicheren Notbremse) – wird weiter beachtet
+HALT_FILE = "HALT"  # Markierung der Notbremse, für Bot C UND Lotse
+# Fortsetzen geht NUR im Terminal auf dem Server – das Dashboard kann es nicht (steht auch in deploy/SERVER.md).
+RESUME_COMMAND = "rm -f ~/quantdesk/deploy/state/halt/HALT ~/quantdesk/deploy/state/data/STOP"
 
 
 def money(value, unit: str = " $") -> str:
@@ -37,8 +40,21 @@ def data_path(settings, name: str) -> str:
     return os.path.join(settings.data_dir, name)
 
 
+def halt_path(settings) -> str:
+    """Wo die Notbremse ihre Markierung ablegt: im Ordner "halt" neben dem Datenordner.
+
+    Auf dem Server: /state/data -> /state/halt/HALT. Ein eigener Ordner, damit das Dashboard nur dorthin
+    schreiben darf (nicht in die Daten von Bot C) und Lotse ihn lesend einbinden kann.
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(settings.data_dir)), "halt", HALT_FILE)
+
+
 def stop_active(settings) -> bool:
-    return os.path.exists(os.path.join(settings.data_dir, STOP_FILE))
+    """Notbremse aktiv? Neue Markierung (halt/HALT) ODER die alte data/STOP.
+
+    Die alte wird weiter beachtet: Liegt sie heute auf dem Server, darf ein Update nicht still weiterhandeln.
+    """
+    return os.path.exists(halt_path(settings)) or os.path.exists(os.path.join(settings.data_dir, STOP_FILE))
 
 
 def save_json(path: str, data) -> None:

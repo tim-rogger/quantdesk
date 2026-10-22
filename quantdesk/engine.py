@@ -280,6 +280,58 @@ class Engine:
         self._publish()
         self._emit("info", "Engine läuft wieder. Systeme einzeln mit 'Toggle' einschalten.")
 
+    # --------------------------------------------------------- Notbremse
+    def halt_cancel(self) -> list[str]:
+        """Notbremse: eigene OFFENE Orders (Einstieg, Stufen, Verkauf) beim Broker stornieren.
+
+        Es wird nichts Neues platziert und nie etwas verkauft. Fremde Orders werden nie angefasst – nur die IDs,
+        die der Bot selbst in seinem Zustand führt. Systeme bleiben eingeschaltet (anders als stop_all), damit
+        nach dem Fortsetzen nichts von Hand wieder eingeschaltet werden muss. Liefert die stornierten IDs.
+        """
+        try:
+            offen = {o.order_id for o in self.broker.get_orders() if o.is_open}
+        except BrokerError as e:
+            self._emit("error", f"Notbremse: Orders nicht lesbar, nichts storniert: {e}", key="halt")
+            return []
+        storniert = []
+        with self._lock:
+            for s in self.systems.values():
+                for order_id in self._eigene_order_ids(s):
+                    if order_id not in offen:
+                        continue
+                    try:
+                        self.broker.cancel_order(order_id)
+                        storniert.append(order_id)
+                        self._emit("order", f"{s.symbol}: Order {order_id} storniert (Notbremse).", s.symbol)
+                    except BrokerError as e:
+                        self._emit("error", f"{s.symbol}: Storno von {order_id} fehlgeschlagen: {e} – bitte im Portal "
+                                            "prüfen.", s.symbol)
+        return storniert
+
+    @staticmethod
+    def _eigene_order_ids(s: EquitySystem) -> list[str]:
+        ids = [lv.order_id for lv in s.levels if lv.status == PLACED and lv.order_id]
+        if s.entry_order_id and s.entry_price is None:
+            ids.append(s.entry_order_id)
+        if s.exit_order_id:
+            ids.append(s.exit_order_id)
+        return ids
+
+    def reopen_halted_levels(self, order_ids: list[str]) -> None:
+        """Stufen, deren Order die Notbremse storniert hat, wieder auf "pending" setzen.
+
+        Ohne das gälte eine stornierte Stufe als "wird nicht neu platziert" (_sync_levels) – nach dem Fortsetzen
+        hätte das Gitter Lücken. So wird sie zum selben Preis neu gesetzt. Stufen, die vor dem Storno noch gefüllt
+        wurden, bleiben gefüllt. Erst nach einem Abgleich (run_once) aufrufen, damit Fills vorher gebucht sind.
+        """
+        ids = set(order_ids)
+        with self._lock:
+            for s in self.systems.values():
+                for lv in s.levels:
+                    if lv.status == CANCELLED and lv.order_id in ids:
+                        lv.status, lv.order_id = PENDING, None
+            self._save()
+
     def systems_snapshot(self) -> list[dict]:
         with self._lock:
             return [copy.deepcopy(s.to_dict()) for s in self.systems.values()]

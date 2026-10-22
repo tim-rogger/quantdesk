@@ -167,22 +167,5 @@ async function load() {
   }
 }
 
-$("stop-form").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  if (!confirm("Wirklich STOP-ALL? Der Bot handelt ab dem nächsten Lauf nicht mehr.")) return;
-  const msg = $("stop-msg");
-  try {
-    const res = await fetch("/api/stop", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin: $("pin").value }) });
-    const body = await res.json();
-    msg.textContent = res.ok ? body.message : (body.detail || "Fehler");
-    msg.className = "small " + (res.ok ? "ok" : "bad");
-    $("pin").value = "";
-    load();
-  } catch (e) {
-    msg.textContent = "Server nicht erreichbar."; msg.className = "small bad";
-  }
-});
-
 load();
 setInterval(load, 60000);

@@ -229,3 +229,18 @@ button.danger { min-height: 44px; background: var(--rot); color: #fff; border: 0
 @media (min-width: 700px) {
   .cards { grid-template-columns: repeat(4, 1fr); }
 }
+
+/* ------------------------------------------------------------ Notbremse (beide Bots) */
+.notbremse { margin-top: 18px; border-color: var(--rot); }
+.notbremse #notbremse-stand { margin: 0 0 10px; }
+.bestaetigen { background: var(--rot-flaeche); border-radius: 10px; padding: 12px; }
+.bestaetigen p { margin: 0 0 6px; }
+.bestaetigen ul { margin: 0 0 12px; padding-left: 20px; }
+.knoepfe { display: flex; gap: 10px; flex-wrap: wrap; }
+.knoepfe button { flex: 1; min-height: 44px; border-radius: 10px; font-size: 15px; font-weight: 600;
+  border: 1px solid var(--linie); background: var(--flaeche); color: var(--text); }
+.knoepfe button.danger { border: 0; background: var(--rot); color: #fff; }
+code.befehl { display: block; margin-top: 6px; padding: 8px 10px; border-radius: 8px; background: var(--flaeche-2);
+  color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+/* "hidden" muss immer gewinnen – sonst bleibt z.B. das Formular (form { display: flex }) trotz hidden sichtbar */
+[hidden] { display: none !important; }
