@@ -27,7 +27,7 @@ from quantdesk.history import load_history
 from quantdesk.notify import Notifier
 from quantdesk.schedule import is_trading_day, ny_today
 from quantdesk.status import (
-    STOP_FILE,
+    RESUME_COMMAND,
     append_jsonl,
     money,
     pct,
@@ -80,6 +80,24 @@ def append_events(path: str, events, keep: int = EVENTS_KEEP) -> None:
         for r in rows:
             f.write(json.dumps(r) + "\n")
     os.replace(tmp, path)
+
+
+def notbremse(engine, warte=time.sleep) -> list[str]:
+    """Lauf bei aktiver Notbremse: nur stoppen.
+
+    1. abgleichen und Fills buchen (keine neuen Orders, keine Verkäufe)
+    2. eigene offene Orders stornieren
+    3. kurz warten, nochmals abgleichen – so sieht der Bot, was storniert und was vorher noch gefüllt wurde
+    4. von der Bremse stornierte Stufen wieder auf "pending", damit sie nach dem Fortsetzen neu gesetzt werden
+    Nie verkaufen, nie Systeme ausschalten. Liefert die stornierten Order-IDs.
+    """
+    engine.run_once(decide=False)
+    storniert = engine.halt_cancel()
+    if storniert:
+        warte(PASS_WAIT_SECONDS)
+        engine.run_once(decide=False)
+        engine.reopen_halted_levels(storniert)
+    return storniert
 
 
 def _pending(engine) -> bool:
@@ -137,9 +155,11 @@ def run(mode: str, force: bool = False, push: bool = True, now: dt.datetime | No
         engine = services.engine
         stopped = stop_active(settings)
         if stopped:
-            engine.stop_all()
-            notifier.send("QuantDesk: STOP-ALL aktiv",
-                          f"Alle Systeme Off, kein Handel. Zum Aufheben: Datei {STOP_FILE} im Datenordner löschen.", "warn")
+            storniert = notbremse(engine)
+            run_row.setdefault("notes", []).append(f"Notbremse aktiv – kein Handel, {len(storniert)} Order(s) storniert")
+            notifier.send("QuantDesk: Notbremse aktiv",
+                          f"Kein Handel. {len(storniert)} eigene offene Order(s) storniert. Positionen bleiben unverändert. "
+                          f"Fortsetzen nur im Terminal: {RESUME_COMMAND}", "warn")
         else:
             engine.run_once(decide=(mode == "trade"))
             if mode == "trade":
@@ -151,7 +171,7 @@ def run(mode: str, force: bool = False, push: bool = True, now: dt.datetime | No
         events = []
         while not engine.events.empty():
             events.append(engine.events.get())
-        authed = True if stopped else engine.status_view.get("authenticated")
+        authed = engine.status_view.get("authenticated")  # auch die Notbremse braucht den Broker (Storno)
         # Broker-Hinweise (z.B. "nur verzögerte Kurse") einmal pro Lauf statt pro Symbol
         notices_fn = getattr(getattr(services.marketdata, "broker", None), "notices", None)
         for note in (notices_fn() if callable(notices_fn) else []):

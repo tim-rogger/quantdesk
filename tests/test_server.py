@@ -315,9 +315,9 @@ def test_dashboard_stop_all_needs_pin(tmp_path, monkeypatch):
     assert client.post("/api/stop", json={"pin": "000000"}).status_code == 403
     assert not (tmp_path / "data" / STOP_FILE).exists()
     r = client.post("/api/stop", json={"pin": "246810"})
-    assert r.status_code == 200 and (tmp_path / "data" / STOP_FILE).exists()
+    assert r.status_code == 200 and (tmp_path / "halt" / "HALT").exists()  # Details: tests/test_notbremse.py
     assert client.get("/api/status").json()["stop_active"] is True
-    assert push.sent and "STOP-ALL" in push.sent[-1]["title"]
+    assert push.sent and "Notbremse" in push.sent[-1]["title"]
 
 
 def test_dashboard_pin_lockout_and_disabled_without_pin(tmp_path, monkeypatch):
@@ -454,6 +454,8 @@ def test_run_daily_trade_and_reconcile(tmp_path, monkeypatch):
 
 
 def test_run_daily_respects_stop_file(tmp_path, monkeypatch):
+    """Notbremse (alte Markierung data/STOP): nichts handeln. Systeme bleiben eingeschaltet – sonst müsste man nach
+    dem Fortsetzen jedes einzeln wieder einschalten. Ausführlich: tests/test_notbremse.py."""
     env(tmp_path, monkeypatch)
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / STOP_FILE).write_text("{}")
@@ -462,7 +464,7 @@ def test_run_daily_respects_stop_file(tmp_path, monkeypatch):
     monkeypatch.setattr(run_daily, "load_report", lambda *a, **k: (_ for _ in ()).throw(ValueError("x")))
     assert run_daily.run("trade", force=True, push=False) == 0
     assert b.placed == []
-    assert json.loads((tmp_path / "eq.json").read_text())["systems"][0]["status"] == "Off"
+    assert json.loads((tmp_path / "eq.json").read_text())["systems"][0]["status"] == "On"
 
 
 def test_run_daily_broker_down_exit_1(tmp_path, monkeypatch):

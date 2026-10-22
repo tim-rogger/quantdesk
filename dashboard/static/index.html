@@ -15,7 +15,7 @@
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/icon-180.png">
   <!-- ?v=… bei jeder Änderung an CSS/JS erhöhen, sonst zeigt das Handy die alte Datei aus seinem Cache -->
-  <link rel="stylesheet" href="/static/style.css?v=6">
+  <link rel="stylesheet" href="/static/style.css?v=7">
 </head>
 <body>
   <header class="kopf">
@@ -26,6 +26,7 @@
   <!-- gilt für alle Reiter: falsches Konto, veraltete Daten -->
   <div id="warnung" class="banner danger" hidden></div>
   <div id="veraltet" class="banner warn" hidden></div>
+  <div id="notbremse-banner" class="banner danger" hidden></div>
 
   <main>
     <!-- ================================================= Übersicht -->
@@ -47,12 +48,38 @@
     <section id="ansicht-bots" class="ansicht" aria-label="Bots" hidden>
       <div id="bot-liste"></div>
 
+      <!-- Notbremse für BEIDE Bots. Sie kann nur ANHALTEN (eigene offene Orders stornieren, keine neuen Orders,
+           nie verkaufen). Fortsetzen geht nur im Terminal auf dem Server. Logik: notbremse.js -->
+      <section id="notbremse" class="karte notbremse" aria-label="Notbremse">
+        <h3>Notbremse – beide Bots</h3>
+        <p id="notbremse-stand" class="klein gedaempft">Bot C und Lotse stornieren beim nächsten Lauf ihre eigenen
+          offenen Orders und handeln danach nicht mehr. Positionen bleiben unverändert.</p>
+        <form id="stop-form" autocomplete="off">
+          <input id="pin" type="password" inputmode="numeric" placeholder="PIN" aria-label="PIN" required>
+          <button type="submit" class="danger">Notbremse ziehen …</button>
+        </form>
+        <div id="notbremse-bestaetigen" class="bestaetigen" hidden>
+          <p><strong>Wirklich beide Bots anhalten?</strong></p>
+          <ul class="klein">
+            <li>Bot C und Lotse stornieren beim nächsten Lauf ihre eigenen offenen Orders.</li>
+            <li>Danach platzieren beide keine neuen Orders mehr.</li>
+            <li>Es wird <strong>nichts verkauft</strong> – Positionen bleiben, wie sie sind.</li>
+            <li>Fortsetzen geht nur im Terminal auf dem Server, nicht hier.</li>
+          </ul>
+          <div class="knoepfe">
+            <button type="button" id="notbremse-abbrechen">Abbrechen</button>
+            <button type="button" id="notbremse-ja" class="danger">Ja, beide Bots anhalten</button>
+          </div>
+        </div>
+        <p id="stop-msg" class="klein"></p>
+      </section>
+
       <!-- Strategie C: alles, was die bisherige Startseite zeigte. bots.js hängt es in die Karte von C
            (Registry: detail = "strategie-c"). app.js füllt es wie bisher aus /api/status. -->
       <div id="detail-strategie-c" class="bot-detail" hidden>
         <p id="subtitle" class="klein gedaempft">Kandidat C · Vorwärtstest</p>
         <span id="mode" class="badge">…</span>
-        <div id="stop-banner" class="banner danger" hidden>STOP-ALL aktiv – der Bot handelt nicht.</div>
+        <div id="stop-banner" class="banner danger" hidden>Notbremse aktiv – der Bot handelt nicht.</div>
         <div id="error-banner" class="banner warn" hidden></div>
 
         <div class="cards">
@@ -94,16 +121,6 @@
           <ul id="events" class="runs"></ul>
         </div>
 
-        <!-- Die Notbremse gab es schon vor diesem Ausbau. Sie bleibt, bis Tim entscheidet (siehe PR). -->
-        <div class="panel stop">
-          <h3>Notbremse</h3>
-          <p class="muted small">STOP-ALL schaltet beim nächsten Lauf alle Systeme aus. Offene Orders bleiben bei IBKR.</p>
-          <form id="stop-form" autocomplete="off">
-            <input id="pin" type="password" inputmode="numeric" placeholder="PIN" aria-label="PIN" required>
-            <button type="submit" class="danger">STOP-ALL</button>
-          </form>
-          <p id="stop-msg" class="small"></p>
-        </div>
         <p class="muted small">Stand Strategie C: <span id="generated">–</span></p>
       </div>
     </section>
@@ -141,10 +158,11 @@
     </a>
   </nav>
 
-  <script src="/static/kern.js?v=6"></script>
-  <script src="/static/uebersicht.js?v=6"></script>
-  <script src="/static/bots.js?v=6"></script>
-  <script src="/static/system.js?v=6"></script>
-  <script src="/static/app.js?v=6"></script>
+  <script src="/static/kern.js?v=7"></script>
+  <script src="/static/uebersicht.js?v=7"></script>
+  <script src="/static/bots.js?v=7"></script>
+  <script src="/static/system.js?v=7"></script>
+  <script src="/static/app.js?v=7"></script>
+  <script src="/static/notbremse.js?v=7"></script>
 </body>
 </html>

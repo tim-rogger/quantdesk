@@ -5,7 +5,7 @@ aufs Handy und hast eine eigene App (Dashboard). **Von aussen ist kein Login-Por
 laufen nur über dein privates Tailscale-Netz. Dein Laptop muss also zuerst im Tailnet sein. Weiterhin **nur Paper-Trading**.
 
 ```
-Laptop / Handy ──(Tailscale, privat)──> Server: SSH · Dashboard :443 · ntfy :8443
+Laptop / Handy ──(Tailscale, privat)──> Server: SSH · Dashboard :8443 · ntfy :443
                                         ├─ bot (Tageslauf 10:00 + 15:30 New York, Backup danach)
                                         └─ ib-gateway (Paper-Login, kein Port nach aussen)
 Internet ──> nur 41641/udp (Tailscale-Tunnel). Port 22 ist geschlossen.
@@ -148,7 +148,7 @@ $ cd ~/quantdesk/deploy
 $ cp .env.example .env && chmod 600 .env && nano .env
 ```
 Ausfüllen: `TWS_USERID` (dein **Paper**-Benutzer), `IBKR_ACCOUNT_ID=DUO844164`, `DASHBOARD_PIN` (mind. 6 Ziffern),
-`NTFY_PUBLIC_URL=https://quantdesk.dein-tailnet.ts.net:8443`, die Backup-Werte (Abschnitt 10) und `HEALTHCHECKS_URL`
+`NTFY_PUBLIC_URL=https://quantdesk.dein-tailnet.ts.net`, die Backup-Werte (Abschnitt 10) und `HEALTHCHECKS_URL`
 (Abschnitt 11). `QUANTDESK_MODE=DRY_RUN` lassen.
 
 **Pflicht vor dem ersten Start: die drei Secret-Dateien.** Fehlt eine, startet `docker compose` gar nicht.
@@ -202,8 +202,8 @@ dann `docker compose up -d`. Ab jetzt läuft der Bot jeden NYSE-Handelstag um 10
 
 **Dashboard und ntfy fürs Handy (nur im Tailnet):**
 ```bash
-$ sudo tailscale serve --bg --https=443  http://127.0.0.1:8080   # Dashboard
-$ sudo tailscale serve --bg --https=8443 http://127.0.0.1:8090   # ntfy
+$ sudo tailscale serve --bg --https=8443 http://127.0.0.1:8080   # Dashboard
+$ sudo tailscale serve --bg --https=443  http://127.0.0.1:8090   # ntfy
 $ docker compose exec ntfy ntfy user add --role=admin tim
 $ docker compose exec ntfy ntfy token add tim                   # Token (tk_...) -> .env NTFY_TOKEN + Passwortmanager
 $ docker compose up -d
@@ -214,8 +214,8 @@ $ sudo install -d -m 700 /etc/quantdesk
 $ printf 'NTFY_LOCAL_URL=http://127.0.0.1:8090\nNTFY_TOPIC=quantdesk\nNTFY_TOKEN=tk_...\n' | sudo tee /etc/quantdesk/ntfy.env >/dev/null
 $ sudo chmod 600 /etc/quantdesk/ntfy.env && sudo ./harden.sh
 ```
-**ntfy-App** (Play Store / App Store): Standard-Server `https://quantdesk.dein-tailnet.ts.net:8443`, Benutzer `tim`,
-Thema `quantdesk` abonnieren. **Dashboard:** im Handy-Browser `https://quantdesk.dein-tailnet.ts.net` öffnen →
+**ntfy-App** (Play Store / App Store): Standard-Server `https://quantdesk.dein-tailnet.ts.net` (Port 443), Benutzer `tim`,
+Thema `quantdesk` abonnieren. **Dashboard:** im Handy-Browser `https://quantdesk.dein-tailnet.ts.net:8443` öffnen →
 **„Zum Home-Bildschirm“**.
 
 **Laptop-Betrieb beenden:** Auf dem Laptop nicht mehr `start.bat` oder das Client-Portal-Gateway starten und nicht
@@ -276,8 +276,8 @@ Das Dashboard ist eine App mit drei Reitern unten: **Übersicht** (Ampel, eine K
 **Bots** (jeder Bot im Detail, Strategie C mit Kapitalkurve und Kriterien) und **System** (die Infrastruktur als
 Skizze). Jeder Kasten ist grün, gelb, rot oder grau (grau = noch nicht eingerichtet). Die Daten sammelt ein kleiner
 Dienst **auf dem Server selbst**, nicht im Dashboard-Container. Das Dashboard liest nur die Datei, die er schreibt
-(`state/system/system.json`). Die App ist **nur zum Anschauen**; einzige Aktion bleibt die alte Notbremse (STOP-ALL)
-bei Strategie C. Neu starten machst du weiterhin im Terminal.
+(`state/system/system.json`). Die App ist **nur zum Anschauen**; einzige Aktion ist die Notbremse (Abschnitt 13), die nur
+anhalten kann. Neu starten machst du weiterhin im Terminal.
 
 Einmalig einrichten (nach `git pull`):
 ```bash
@@ -288,7 +288,7 @@ $ sudo cp deploy/systemstatus.service /etc/systemd/system/quantdesk-systemstatus
 $ sudo systemctl daemon-reload && sudo systemctl enable --now quantdesk-systemstatus
 $ cd deploy && docker compose up -d                    # Dashboard bekommt den neuen (nur lesenden) Ordner
 ```
-Ansehen: `https://quantdesk.dein-tailnet.ts.net` (Port 443, also ohne `:8443` – dort läuft ntfy). Im Handy-Browser
+Ansehen: `https://quantdesk.dein-tailnet.ts.net:8443` (mit `:8443` – ohne Port antwortet ntfy). Im Handy-Browser
 öffnen → **„Zum Home-Bildschirm“**. Eine Kachel reicht für alle drei Reiter. War schon eine alte Kachel da: löschen
 und neu anlegen, sonst bleibt das alte Icon.
 
@@ -297,6 +297,31 @@ und neu anlegen, sonst bleibt das alte Icon.
 - Neuer Bot → einen `[[bot]]`-Eintrag in `deploy/bots.toml`, keine Codeänderung. Der Sammler liest die Datei bei
   jeder Messung neu.
 - Nach einem Update des Sammlers (`git pull`): `sudo systemctl restart quantdesk-systemstatus`
+
+## 13. Notbremse: beide Bots anhalten
+
+Im Dashboard, Reiter **Bots**, ganz unten: PIN eingeben → **„Notbremse ziehen …“** → bestätigen.
+
+**Was sie tut** – beim nächsten Lauf jedes Bots (Bot C: 10:00 / 15:30 New York, Lotse: 10:30 Zürich):
+- Bot C und Lotse **stornieren ihre eigenen offenen Orders** (nur eigene, nie fremde) und **platzieren keine neuen**.
+- Bot C bucht vorher noch Ausführungen, die schon passiert sind. Seine Kaufstufen bleiben vorgemerkt und werden nach
+  dem Fortsetzen zum selben Preis neu gesetzt.
+
+**Was sie nie tut:** nichts verkaufen, keine Position glattstellen, nichts starten, nichts fortsetzen.
+
+**Wie sie funktioniert:** Das Dashboard legt nur die Datei `state/halt/HALT` an – das ist der einzige Ordner, in den
+es schreiben darf. Bot C und Lotse prüfen sie vor jedem Lauf. Die alte Markierung `state/data/STOP` wird weiterhin
+beachtet.
+
+**Fortsetzen – nur hier im Terminal**, nicht im Dashboard:
+```bash
+$ rm -f ~/quantdesk/deploy/state/halt/HALT ~/quantdesk/deploy/state/data/STOP
+```
+Danach handeln beide Bots beim nächsten geplanten Lauf wieder normal.
+
+> Zwischen dem Ziehen und dem nächsten Lauf liegen offene Kauforders von Bot C noch bei IBKR und können ausgeführt
+> werden. Muss es sofort sein: Orders im IBKR-Portal stornieren, oder einen Lauf von Hand starten
+> (`docker compose exec bot python run_daily.py reconcile --force`).
 
 ---
 
@@ -331,7 +356,7 @@ etwas anderes: **nicht** weitermachen, Bericht an Claude schicken. Notweg: die u
 | Logs Bot / Gateway | `docker compose logs --tail 100 bot` / `... ib-gateway` |
 | Lauf sofort | `docker compose exec bot python run_daily.py trade --force` |
 | Monatsreport | `docker compose exec bot python forward_test.py report` |
-| STOP-ALL aufheben | `rm state/data/STOP` (nach STOP-ALL im Dashboard) |
+| Notbremse aufheben | `rm -f state/halt/HALT state/data/STOP` (siehe Abschnitt 13) |
 | Update | `git pull && sudo ./prepare.sh && docker compose up -d --build` |
 | Backup-Stände | `docker compose exec bot python -m quantdesk.backup snapshots` |
 

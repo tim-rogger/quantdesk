@@ -1,4 +1,4 @@
-"""QuantDesk-Dashboard: kleine Web-App (PWA) – nur lesend, einzige Aktion ist STOP-ALL mit PIN.
+"""QuantDesk-Dashboard: kleine Web-App (PWA) – nur lesend, einzige Aktion ist die Notbremse (mit PIN, nur anhalten).
 
 Eine Seite mit drei Reitern (Übersicht, Bots, System), siehe static/index.html.
 Liest data/status.json und data/snapshots.jsonl, die run_daily.py nach jedem Lauf schreibt, und
@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 from quantdesk.config import load_settings
 from quantdesk.notify import Notifier
-from quantdesk.status import STOP_FILE, read_jsonl
+from quantdesk.status import RESUME_COMMAND, STOP_FILE, halt_path, read_jsonl
 
 STATIC = Path(__file__).parent / "static"
 MAX_PIN_FAILS = 5
@@ -121,9 +121,8 @@ def create_app(settings=None, notifier: Notifier | None = None) -> FastAPI:
             data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"missing": True}
         except ValueError:
             data = {"missing": True, "error": "status.json ist kaputt (nicht lesbar)."}
-        stop = data_dir / STOP_FILE
-        data["stop_active"] = stop.exists()
-        data["stop_since"] = stop.stat().st_mtime if stop.exists() else None
+        halt = halt_info()
+        data["stop_active"], data["stop_since"], data["halt"] = halt["aktiv"], halt["seit"], halt
         try:
             data["snapshots"] = read_jsonl(str(data_dir / "snapshots.jsonl"))
         except ValueError:
@@ -132,30 +131,44 @@ def create_app(settings=None, notifier: Notifier | None = None) -> FastAPI:
         data["invalid_numbers"] = bad[:5]
         return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
+    # --- Notbremse. Sie kann NUR anhalten: Sie legt eine Markierung ab, die beide Bots vor jedem Lauf lesen.
+    # Es gibt bewusst keine Route zum Fortsetzen – das geht nur im Terminal (RESUME_COMMAND, SERVER.md).
+    halt_file = Path(halt_path(settings))
+    legacy_stop = data_dir / STOP_FILE  # alte Markierung, wird weiter beachtet
+
+    def halt_info() -> dict:
+        zeiten = [p.stat().st_mtime for p in (halt_file, legacy_stop) if p.exists()]
+        return {"aktiv": bool(zeiten), "seit": min(zeiten) if zeiten else None, "fortsetzen": RESUME_COMMAND}
+
     @app.post("/api/stop")
     def stop_all(req: StopRequest, request: Request) -> dict:
         client = request.client.host if request.client else "?"
         if not settings.dashboard_pin:
-            raise HTTPException(403, "Keine PIN gesetzt (DASHBOARD_PIN in .env) – STOP-ALL ist deaktiviert.")
+            raise HTTPException(403, "Keine PIN gesetzt (DASHBOARD_PIN in .env) – Notbremse ist deaktiviert.")
         if guard.locked(client):
             raise HTTPException(429, "Zu viele falsche PINs – 15 Minuten gesperrt.")
         if not hmac.compare_digest(req.pin.strip().encode(), settings.dashboard_pin.encode()):
             guard.fail(client)
             raise HTTPException(403, "Falsche PIN.")
         guard.reset(client)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        (data_dir / STOP_FILE).write_text(json.dumps({"ts": time.time(), "by": f"dashboard {client}"}), encoding="utf-8")
-        notifier.send("QuantDesk: STOP-ALL ausgelöst",
-                      "Über das Dashboard. Beim nächsten Lauf werden alle Systeme ausgeschaltet; offene Orders bleiben "
-                      "bei IBKR – bei Bedarf im Portal stornieren.", "error")
-        return {"ok": True, "message": "STOP-ALL aktiv. Der Bot handelt ab dem nächsten Lauf nicht mehr."}
+        if halt_file.exists():
+            return {"ok": True, "message": "Notbremse war schon aktiv. Fortsetzen nur im Terminal."}
+        halt_file.parent.mkdir(parents=True, exist_ok=True)
+        halt_file.write_text(json.dumps({"ts": time.time(), "by": f"dashboard {client}"}), encoding="utf-8")
+        notifier.send("QuantDesk: Notbremse gezogen",
+                      "Über das Dashboard. Beim nächsten Lauf stornieren Bot C und Lotse ihre eigenen offenen Orders und "
+                      "handeln nicht mehr. Positionen bleiben. Fortsetzen nur im Terminal: " + RESUME_COMMAND, "error")
+        return {"ok": True, "message": "Notbremse aktiv. Beide Bots stornieren beim nächsten Lauf ihre offenen Orders "
+                                       "und handeln nicht mehr. Fortsetzen nur im Terminal."}
 
     # --- Systemseite: nur lesen. Hier gibt es bewusst keine POST-Route und keinen Knopf.
     system_file = Path(os.getenv("QUANTDESK_SYSTEM_FILE", "state/system/system.json"))
 
     @app.get("/api/system")
     def system_status() -> JSONResponse:
-        return JSONResponse(read_system_file(system_file), headers={"Cache-Control": "no-store"})
+        data = read_system_file(system_file)
+        data["halt"] = halt_info()  # direkt aus der Markierung – ohne auf den Sammler zu warten
+        return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
     @app.get("/system")
     def system_page() -> FileResponse:
