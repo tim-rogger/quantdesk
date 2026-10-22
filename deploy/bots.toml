@@ -10,6 +10,7 @@
 #   container     Name des Docker-Compose-Dienstes, in dem der Bot läuft – erscheint als Kasten in der Skizze
 #   laeufe        geplante Uhrzeiten (Mo–Fr) in `zeitzone`. Börsenfeiertage kennt der Sammler nicht.
 #   eingerichtet  false = grauer Kasten "noch nicht eingerichtet" (kein Fehler).
+#   verlauf_datei optional: JSONL mit einem Wert pro Tag (Feld verlauf_feld) für die Mini-Kurve
 #   format        wie die Dateien aussehen (Standard: "laeufe"):
 #
 # format = "laeufe" (Strategie C):
@@ -33,14 +34,16 @@
 
 [[bot]]
 id = "c"
-name = "Strategie C"
-strategie = "Grid 5 × 2 %, SMA200 + Ausstieg"
+name = "Bot C"
+strategie = "5×2 %, ohne TP, Trend SMA200 + Exit"
 strategie_kurz = "Grid mit Trendfilter"
 eingerichtet = true
 container = "bot"
 detail = "strategie-c"            # zusätzlicher Inhalt auf der Bots-Seite (Kapitalkurve, Kriterien, Positionen)
 status_datei = "state/data/status.json"
 laeufe_datei = "state/data/runs.jsonl"
+verlauf_datei = "state/data/snapshots.jsonl"   # Tageswerte für die Mini-Kurve
+verlauf_feld = "c_value"
 waehrung = "USD"
 zeitzone = "America/New_York"
 laeufe = ["10:00", "15:30"]

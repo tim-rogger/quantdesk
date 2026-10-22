@@ -1,171 +1,193 @@
 "use strict";
-// Strategie C im Detail (Reiter "Bots"): liest /api/status wie die frühere Startseite.
-// $, el und zeit kommen aus kern.js.
+// Bot C im Detail: Inhalte aus /api/status (status.json von Bot C, nur gelesen).
+// Meldet sich unter DETAILS["strategie-c"] an (bots.toml: detail = "strategie-c") und liefert cUebersicht()
+// für die Wertkarte auf der Übersicht. $, el, geld, prozent usw. kommen aus kern.js.
+// Die Notbremse (für beide Bots) steht nicht hier, sondern in notbremse.js.
 
-const money = (v) => v == null ? "–" : Math.round(v).toLocaleString("de-CH") + " $";
-const pct = (v, sign = true) => v == null ? "–" : (sign && v > 0 ? "+" : "") + (v * 100).toFixed(1) + " %";
-// Der Bot plant in New-York-Zeit – zum Vergleichen mit dem Zeitplan (10:00 / 15:30) zusätzlich diese Uhrzeit
-const nyZeit = (ts) => new Date(ts * 1000).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" }) + " New York";
-// Farben aus style.css (CSS-Variablen), damit das Diagramm hell und dunkel stimmt
-const farbe = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-const COLORS = { "C live (Paper)": "--gruen", "SPY halten": "--akzent", "C Backtest (gleicher Zeitraum)": "--text-2" };
+const C_DETAIL = "strategie-c";
+const SORTIERUNGEN = { gv: "G/V", wert: "Wert", az: "A–Z" };
 
-function curvesFrom(data) {
-  const rep = data.report;
-  if (rep && rep.curves && Object.keys(rep.curves).length) return rep.curves;
-  // Fallback: Snapshots (C-Wert und SPY-Kurs), normiert
-  const snaps = (data.snapshots || []).filter((s) => s.c_value && s.spy);
-  if (snaps.length < 2) return {};
+// ---------------------------------------------------------------- Zahlen aus status.json
+function cPositionen(status) {
+  return (status.systems || []).filter((s) => s.bot_qty > 0 || s.entry_pending || s.exit_pending);
+}
+
+// Kurven auf 1.0 = Start normiert. Bevorzugt aus dem Report, sonst aus den Tages-Snapshots.
+function cKurven(status) {
+  const kurven = (status.report && status.report.curves) || {};
+  if (kurven["C live (Paper)"]) return { kurve: kurven["C live (Paper)"], spy: kurven["SPY halten"] || null };
+  const snaps = (status.snapshots || []).filter((s) => s.c_value && s.spy);
+  if (snaps.length < 2) return { kurve: null, spy: null };
   return {
-    "C live (Paper)": { days: snaps.map((s) => s.day), values: snaps.map((s) => s.c_value / snaps[0].c_value) },
-    "SPY halten": { days: snaps.map((s) => s.day), values: snaps.map((s) => s.spy / snaps[0].spy) },
+    kurve: { days: snaps.map((s) => s.day), values: snaps.map((s) => s.c_value / snaps[0].c_value) },
+    spy: { days: snaps.map((s) => s.day), values: snaps.map((s) => s.spy / snaps[0].spy) },
   };
 }
 
-function drawChart(curves) {
-  const svg = $("chart"), legend = $("legend");
-  svg.innerHTML = ""; legend.innerHTML = "";
-  const names = Object.keys(curves);
-  if (!names.length) {
-    const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    Object.entries({ x: 300, y: 120, "text-anchor": "middle", fill: farbe("--text-2"), "font-size": 14 }).forEach(([k, v]) => t.setAttribute(k, v));
-    t.textContent = "Noch keine Daten – nach den ersten Läufen.";
-    svg.appendChild(t);
-    return;
-  }
-  const all = names.flatMap((n) => curves[n].values);
-  let lo = Math.min(...all), hi = Math.max(...all);
-  if (hi - lo < 0.01) { lo -= 0.005; hi += 0.005; }
-  const W = 600, H = 240, pad = 8;
-  const y = (v) => H - pad - (v - lo) / (hi - lo) * (H - 2 * pad);
-  const ns = "http://www.w3.org/2000/svg";
-  const base = document.createElementNS(ns, "line");
-  Object.entries({ x1: 0, x2: W, y1: y(1), y2: y(1), stroke: farbe("--linie"), "stroke-dasharray": "4 4" }).forEach(([k, v]) => base.setAttribute(k, v));
-  svg.appendChild(base);
-  names.forEach((name, i) => {
-    const vals = curves[name].values;
-    const color = farbe(COLORS[name] || (name.startsWith("Mischung") ? "--violett" : ["--gelb", "--rot"][i % 2]));
-    const pts = vals.map((v, j) => `${(j / Math.max(vals.length - 1, 1) * W).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
-    const line = document.createElementNS(ns, "polyline");
-    line.setAttribute("points", pts); line.setAttribute("fill", "none"); line.setAttribute("stroke", color);
-    line.setAttribute("stroke-width", name.startsWith("C live") ? 2.5 : 1.5);
-    line.setAttribute("vector-effect", "non-scaling-stroke");
-    if (name.startsWith("C Backtest")) line.setAttribute("stroke-dasharray", "5 4");
-    svg.appendChild(line);
-    const item = el("span"); const sw = el("i"); sw.style.background = color;
-    item.appendChild(sw); item.appendChild(document.createTextNode(`${name} ${pct(vals[vals.length - 1] - 1)}`));
-    legend.appendChild(item);
-  });
+function cSpyRendite(status) {
+  const zeile = status.report && status.report.rows && status.report.rows["SPY halten"];
+  if (zeile && zeile.USD) return zeile.USD.total_return;
+  const { spy } = cKurven(status);
+  return spy ? spy.values[spy.values.length - 1] - 1 : null;
 }
 
-function render(data) {
-  if (data.missing) {
-    $("subtitle").textContent = data.error || "Noch kein Lauf – status.json fehlt.";
-    return;
+function cLetzterLauf(status) {
+  const laeufe = status.runs || [];
+  const letzter = laeufe[laeufe.length - 1];
+  return letzter ? { ts: letzter.ts, ok: letzter.ok, fills: letzter.fills ?? 0 } : null;
+}
+
+// Offener Gewinn/Verlust: (Kurs − Ø-Einstand) × eigene Stück, über alle offenen Positionen.
+// Ohne Gebühren und ohne geschlossene Trades – das ganze Ergebnis steht unter "Seit Start".
+function cOffenerGewinn(status) {
+  return cPositionen(status).reduce((summe, s) => summe + (s.pnl || 0), 0);
+}
+
+function cBotKasten() {
+  return ((systemDaten && systemDaten.kaesten) || []).find((k) => k.detail === C_DETAIL);
+}
+
+// Für die Wertkarte der Übersicht
+function cUebersicht(status) {
+  const konto = status.c_account || {};
+  const { kurve, spy } = cKurven(status);
+  const bot = cBotKasten();
+  return {
+    name: bot ? bot.titel : "Bot C",
+    wert: konto.value ?? null,
+    budget: konto.budget ?? null,
+    gewinn: konto.value != null && konto.budget ? konto.value - konto.budget : null,
+    rendite: konto.value != null && konto.budget ? konto.value / konto.budget - 1 : null,
+    anteil: konto.value ? konto.invested / konto.value : null,
+    cash: konto.cash ?? null,
+    letzterLauf: cLetzterLauf(status),
+    kurve, spy,
+    positionen: cPositionen(status).filter((s) => s.bot_qty > 0),
+  };
+}
+
+// ---------------------------------------------------------------- Detailseite von Bot C
+DETAILS[C_DETAIL] = {
+  reiter: ["positionen", "details", "kriterien"],
+
+  kacheln(k, status) {
+    const c = cUebersicht(status);
+    const spy = cSpyRendite(status);
+    const offen = cOffenerGewinn(status);
+    return [
+      { t: "Wert", w: geld(c.wert), unter: `Budget ${geld(c.budget)}` },
+      { t: "Seit Start", w: prozent(c.rendite), klasse: farbKlasse(c.rendite), unter: spy != null ? `SPY ${prozent(spy)}` : "" },
+      { t: "Investiert", w: geld(status.c_account ? status.c_account.invested : null),
+        unter: `${c.anteil != null ? (c.anteil * 100).toFixed(1) : "–"} % · Cash ${geld(c.cash)}` },
+      { t: "G/V offen", w: geldMitVorzeichen(offen), klasse: farbKlasse(offen),
+        unter: `${c.positionen.length} Positionen · ohne Gebühren` },
+    ];
+  },
+
+  inhalt(reiter, k, status, sortierung) {
+    if (reiter === "positionen") return cPositionsListe(k, status, sortierung);
+    if (reiter === "kriterien") return cKriterien(status);
+    return cDetails(k, status);
+  },
+};
+
+function cPositionsListe(k, status, sortierung) {
+  const box = el("div");
+  const art = SORTIERUNGEN[sortierung] ? sortierung : "gv";
+  const alle = status.systems || [];
+  const positionen = cPositionen(status).slice().sort(vergleicher(art));
+
+  const kopf = el("div", { class: "sortier-zeile" });
+  kopf.appendChild(el("span", { class: "gedaempft" }, `${positionen.length} von ${alle.length} Systemen`));
+  const links = el("nav", { class: "sortierung", "aria-label": "Sortierung" });
+  for (const [schluessel, name] of Object.entries(SORTIERUNGEN)) {
+    links.appendChild(el("a", { href: `#bots/${k.id}/positionen/${schluessel}`, class: schluessel === art ? "aktiv" : "" }, name));
   }
-  const mode = $("mode");
-  mode.textContent = data.mode; mode.className = "badge " + (data.mode === "PAPER" ? "paper" : "dry");
-  $("subtitle").textContent = `${data.strategy || "Kandidat C"} · ${data.account_id || "offline"} · ${data.broker}`;
-  $("stop-banner").hidden = !data.stop_active;
-  $("generated").textContent = data.generated_at ? zeit(data.generated_at) : "–";
+  kopf.appendChild(links);
+  box.appendChild(kopf);
 
-  const acc = data.c_account || {};
-  $("c-value").textContent = money(acc.value);
-  $("c-sub").textContent = `Budget ${money(acc.budget)}`;
-  $("c-inv").textContent = acc.value ? pct(acc.invested / acc.value, false) : "–";
-  $("c-cash").textContent = `${money(acc.invested)} investiert · Cash ${money(acc.cash)}`;
-
-  const rep = data.report;
-  const live = rep && rep.rows["C live (Paper)"] && rep.rows["C live (Paper)"].USD;
-  const spy = rep && rep.rows["SPY halten"] && rep.rows["SPY halten"].USD;
-  $("c-ret").textContent = live ? pct(live.total_return) : (acc.budget ? pct(acc.value / acc.budget - 1) : "–");
-  $("c-ret").className = "big " + ((live ? live.total_return : 0) >= 0 ? "ok" : "bad");
-  $("spy-ret").textContent = spy ? `SPY ${pct(spy.total_return)} · seit ${rep.start}` : "";
-
-  const runs = (data.runs || []).slice().reverse();
-  const last = runs[0];
-  $("last-run").textContent = last ? zeit(last.ts, { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "–";
-  $("last-run-sub").textContent = last ? `${nyZeit(last.ts)} · ${last.mode} · ${last.ok ? "ok" : "Fehler"} · ${last.fills} Fills` : "";
-  const errs = last && last.errors && last.errors.length ? last.errors : [];
-  $("error-banner").hidden = !errs.length;
-  $("error-banner").textContent = errs.length ? `Letzter Lauf: ${errs[0]}${errs.length > 1 ? ` (+${errs.length - 1})` : ""}` : "";
-  // nan/inf im Status: der Server hat sie durch null ersetzt (sonst Fehler 500) – hier sichtbar machen, nicht verstecken
-  const bad = data.invalid_numbers || [];
-  if (bad.length) {
-    $("error-banner").hidden = false;
-    $("error-banner").textContent = `Ungültige Zahlen im Status (nan/inf): ${bad.join(", ")}` +
-      (errs.length ? ` · Letzter Lauf: ${errs[0]}` : "");
-  }
-
-  drawChart(curvesFrom(data));
-
-  const checks = $("checks"); checks.innerHTML = "";
-  if (rep) {
-    $("test-state").textContent = rep.finished ? (rep.passed ? "– BESTANDEN" : "– durchgefallen") : `– läuft, Monat ${rep.months_done + 1} von 6`;
-    rep.checks.forEach((c) => {
-      const li = el("li");
-      li.appendChild(el("span", { class: c.ok ? "ok" : "bad" }, c.ok ? "✓" : "✗"));
-      li.appendChild(el("span", {}, `${c.code} ${c.text} – ${c.detail}`));
-      checks.appendChild(li);
-    });
-    if (rep.estimated_fills) checks.appendChild(el("li", { class: "muted" }, `${rep.estimated_fills} Fill(s) mit geschätztem Tag (siehe ROADMAP).`));
-  } else {
-    checks.appendChild(el("li", { class: "muted" }, "Noch kein Report (ab dem 2. Handelstag)."));
-  }
-
-  const tbody = $("positions"); tbody.innerHTML = "";
-  const systems = data.systems || [];
-  const held = systems.filter((s) => s.bot_qty > 0 || s.entry_pending || s.exit_pending);
-  $("pos-count").textContent = `${held.length} von ${systems.length} Systemen`;
-  held.forEach((s) => {
-    const tr = el("tr");
-    const sym = el("td", {}, s.symbol);
-    if (s.exit_pending) sym.appendChild(el("span", { class: "tag" }, "Verkauf"));
-    if (s.entry_pending) sym.appendChild(el("span", { class: "tag" }, "Einstieg"));
-    if (s.broker_qty > s.bot_qty) sym.appendChild(el("span", { class: "tag" }, `+${s.broker_qty - s.bot_qty} fremd`));
-    tr.appendChild(sym);
-    tr.appendChild(el("td", { class: "num" }, String(s.bot_qty)));
-    tr.appendChild(el("td", { class: "num" }, s.avg ? s.avg.toFixed(2) : "–"));
-    tr.appendChild(el("td", { class: "num" }, s.price ? s.price.toFixed(2) : "–"));
-    tr.appendChild(el("td", { class: "num " + (s.pnl >= 0 ? "ok" : "bad") }, money(s.pnl)));
-    tr.appendChild(el("td", {}, `${s.filled_levels} gefüllt · ${s.open_levels.length} offen`));
-    tbody.appendChild(tr);
+  const karte = el("div", { class: "positionen-karte" });
+  const liste = el("ul", { class: "positionen" });
+  if (!positionen.length) liste.appendChild(el("li", { class: "leer" }, "Keine offenen Positionen."));
+  positionen.forEach((s) => {
+    const zusatz = [s.exit_pending ? "Verkauf offen" : "", s.entry_pending ? "Einstieg offen" : "",
+      s.broker_qty > s.bot_qty ? `+${s.broker_qty - s.bot_qty} fremd` : ""].filter(Boolean).join(" · ");
+    const unter = `${zahl(s.bot_qty)} × Ø ${s.avg ? zahl(s.avg, 2) : "–"}` + (zusatz ? ` · ${zusatz}` : "");
+    liste.appendChild(positionsZeile(s, unter, s.price ? zahl(s.price, 2) : "–"));
   });
-  const nt = systems.filter((s) => s.not_tradable).map((s) => s.symbol);
-  const closed = systems.filter((s) => s.closed).map((s) => `${s.symbol} (${s.closed})`);
-  $("excluded").textContent = [nt.length ? `Ohne Handelsberechtigung: ${nt.join(", ")}` : "", closed.length ? `Geschlossen: ${closed.join(", ")}` : ""]
-    .filter(Boolean).join(" · ");
+  karte.appendChild(liste);
+  box.appendChild(karte);
 
-  const ev = $("events"); ev.innerHTML = "";
-  const events = (data.events || []).slice().reverse().slice(0, 40);
-  if (!events.length) ev.appendChild(el("li", { class: "muted" }, "Noch keine Ereignisse."));
-  events.forEach((e) => {
-    const li = el("li");
-    const cls = e.level === "error" ? "bad" : e.level === "warn" ? "muted" : "ok";
-    li.appendChild(el("span", { class: cls }, e.level === "error" ? "●" : e.level === "warn" ? "▲" : "●"));
-    li.appendChild(el("span", {}, `${zeit(e.ts, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} · ${e.message}`));
-    ev.appendChild(li);
-  });
+  const gesperrt = alle.filter((s) => s.not_tradable).map((s) => s.symbol);
+  const geschlossen = alle.filter((s) => s.closed).map((s) => `${s.symbol} (${s.closed})`);
+  const hinweis = [gesperrt.length ? `Ohne Handelsberechtigung: ${gesperrt.join(", ")}` : "",
+    geschlossen.length ? `Geschlossen: ${geschlossen.join(", ")}` : ""].filter(Boolean).join(" · ");
+  if (hinweis) box.appendChild(el("p", { class: "klein gedaempft unter-titel" }, hinweis));
+  return box;
+}
 
-  const ul = $("runs"); ul.innerHTML = "";
-  runs.slice(0, 10).forEach((r) => {
+function vergleicher(art) {
+  if (art === "wert") return (a, b) => (b.bot_qty * (b.price || 0)) - (a.bot_qty * (a.price || 0));
+  if (art === "az") return (a, b) => a.symbol.localeCompare(b.symbol);
+  return (a, b) => (b.pnl || 0) - (a.pnl || 0);
+}
+
+function cDetails(k, status) {
+  const box = el("div");
+  const fehler = cFehlerText(status);
+  if (fehler) box.appendChild(el("div", { class: "banner gelb" }, fehler));
+  box.appendChild(el("p", { class: "abschnitt" }, "Details"));
+  box.appendChild(detailListe(k.zeilen));
+
+  box.appendChild(el("p", { class: "abschnitt" }, "Letzte Läufe"));
+  const laeufe = el("ul", { class: "einfache-liste karte" });
+  (status.runs || []).slice().reverse().slice(0, 10).forEach((r) => {
     const li = el("li");
-    li.appendChild(el("span", { class: r.ok ? "ok" : "bad" }, r.ok ? "●" : "●"));
+    li.appendChild(punkt(r.ok ? "gruen" : "rot"));
     li.appendChild(el("span", {}, `${zeit(r.ts)} · ${r.mode} · ${r.fills} Fills, ${r.orders} Orders` +
       (r.errors && r.errors.length ? ` · ${r.errors[0]}` : "")));
-    ul.appendChild(li);
+    laeufe.appendChild(li);
   });
+  if (!laeufe.children.length) laeufe.appendChild(el("li", { class: "leer" }, "Noch kein Lauf."));
+  box.appendChild(laeufe);
+
+  box.appendChild(el("p", { class: "abschnitt" }, "Verlauf"));
+  const verlauf = el("ul", { class: "einfache-liste karte" });
+  (status.events || []).slice().reverse().slice(0, 40).forEach((e) => {
+    const li = el("li");
+    li.appendChild(punkt(e.level === "error" ? "rot" : e.level === "warn" ? "gelb" : "gruen"));
+    li.appendChild(el("span", {}, `${zeit(e.ts, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} · ${e.message}`));
+    verlauf.appendChild(li);
+  });
+  if (!verlauf.children.length) verlauf.appendChild(el("li", { class: "leer" }, "Noch keine Ereignisse."));
+  box.appendChild(verlauf);
+
+  box.appendChild(el("p", { class: "klein gedaempft unter-titel" }, `Stand Bot C: ${status.generated_at ? zeit(status.generated_at) : "–"}`));
+  return box;
 }
 
-async function load() {
-  try {
-    const res = await fetch("/api/status", { cache: "no-store" });
-    render(await res.json());
-  } catch (e) {
-    $("error-banner").hidden = false;
-    $("error-banner").textContent = "Server nicht erreichbar (Tailscale an?).";
-  }
+// Fehler des letzten Laufs und ungültige Zahlen (nan/inf, vom Server durch null ersetzt) sichtbar machen
+function cFehlerText(status) {
+  const lauf = (status.runs || [])[(status.runs || []).length - 1];
+  const fehler = lauf && lauf.errors && lauf.errors.length ? `Letzter Lauf: ${lauf.errors[0]}` : "";
+  const kaputt = (status.invalid_numbers || []).length ? `Ungültige Zahlen im Status (nan/inf): ${status.invalid_numbers.join(", ")}` : "";
+  return [kaputt, fehler].filter(Boolean).join(" · ");
 }
 
-load();
-setInterval(load, 60000);
+function cKriterien(status) {
+  const box = el("div");
+  const rep = status.report;
+  const stand = rep ? (rep.finished ? (rep.passed ? "bestanden" : "durchgefallen") : `läuft, Monat ${rep.months_done + 1} von 6`) : "";
+  box.appendChild(el("p", { class: "abschnitt" }, `Bestehen-Kriterien${stand ? " – " + stand : ""}`));
+  const liste = el("ul", { class: "einfache-liste karte" });
+  if (!rep) liste.appendChild(el("li", { class: "leer" }, "Noch kein Report (ab dem 2. Handelstag)."));
+  (rep ? rep.checks : []).forEach((c) => {
+    const li = el("li");
+    li.appendChild(punkt(c.ok ? "gruen" : "rot"));
+    li.appendChild(el("span", {}, `${c.code} ${c.text} – ${c.detail}`));
+    liste.appendChild(li);
+  });
+  if (rep && rep.estimated_fills) liste.appendChild(el("li", { class: "gedaempft" }, `${rep.estimated_fills} Fill(s) mit geschätztem Tag (siehe ROADMAP).`));
+  box.appendChild(liste);
+  return box;
+}
