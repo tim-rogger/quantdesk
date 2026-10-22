@@ -65,7 +65,9 @@ def lotse_tagebuch(eintraege: list[dict], ausfuehrungen: list[dict], orders: lis
         "positionen": _positionen(ausfuehrungen),
         "vorschlaege": _vorschlaege(orders, fertige[-1]["lauf"], letzter) if fertige else [],
         "kurse": _kurse(letzter.get("kurse") or {}),
+        "verlauf": _gesamt_verlauf(laeufe),
     }
+    status["wert"] = status["verlauf"][-1] if status["verlauf"] else None
     return status, fertige
 
 
@@ -88,6 +90,7 @@ def _laeufe_sammeln(eintraege: list[dict], zone_wenn_fehlt: str | None) -> dict[
         elif ereignis == "ende":
             lauf["ende"] = True
             lauf["ergebnis"] = e.get("ergebnis") or ""
+            lauf["gesamt"] = e.get("gesamt")
     return laeufe
 
 
@@ -109,6 +112,12 @@ def _fertige_laeufe(laeufe: dict[int, dict], jetzt: float, laeuft_hoechstens_min
         grund = lauf["ergebnis"].splitlines()[0] if lauf["ergebnis"] else "ohne Grund"
         fertige.append({"ts": start, "ok": ok, "errors": [] if ok else [grund], "lauf": nummer})
     return fertige
+
+
+def _gesamt_verlauf(laeufe: dict[int, dict]) -> list[float]:
+    """Lotses Depotwert ("gesamt" in der ende-Zeile) Lauf für Lauf – für Wert und Mini-Kurve."""
+    werte = [laeufe[n].get("gesamt") for n in sorted(laeufe)]
+    return [w for w in werte if isinstance(w, (int, float)) and not isinstance(w, bool)][-90:]
 
 
 def _letzter_wert(eintraege: list[dict], ereignis: str, feld: str):

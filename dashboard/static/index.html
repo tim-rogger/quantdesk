@@ -15,36 +15,73 @@
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/icon-180.png">
   <!-- ?v=… bei jeder Änderung an CSS/JS erhöhen, sonst zeigt das Handy die alte Datei aus seinem Cache -->
-  <link rel="stylesheet" href="/static/style.css?v=7">
+  <link rel="stylesheet" href="/static/style.css?v=9">
 </head>
 <body>
+  <!-- Kopf: auf den drei Reitern gross (Untertitel, Titel, Pille), auf Detailseiten nur "‹ zurück" -->
   <header class="kopf">
-    <h1 id="seitentitel">Übersicht</h1>
-    <span id="paper-abzeichen" class="abzeichen">…</span>
+    <a id="zurueck" class="zurueck" href="#bots" hidden>‹ Bots</a>
+    <div id="kopf-gross" class="kopf-gross">
+      <div>
+        <p id="untertitel" class="untertitel"></p>
+        <h1 id="seitentitel">Übersicht</h1>
+      </div>
+      <span id="kopf-pille" class="pille" hidden></span>
+    </div>
   </header>
 
-  <!-- gilt für alle Reiter: falsches Konto, veraltete Daten -->
-  <div id="warnung" class="banner danger" hidden></div>
-  <div id="veraltet" class="banner warn" hidden></div>
-  <div id="notbremse-banner" class="banner danger" hidden></div>
+  <!-- gilt für alle Seiten: falsches Konto, veraltete Daten -->
+  <div id="warnung" class="banner rot" hidden></div>
+  <div id="veraltet" class="banner gelb" hidden></div>
+  <div id="notbremse-banner" class="banner rot" hidden></div>
 
   <main>
-    <!-- ================================================= Übersicht -->
+    <!-- Übersicht (Vorlage 01) -->
     <section id="ansicht-uebersicht" class="ansicht" aria-label="Übersicht">
-      <a id="ampel" class="ampel karte" href="#system">
-        <span class="punkt gross"></span>
-        <span>
-          <strong id="ampel-satz">Lade …</strong>
-          <span id="ampel-was" class="klein gedaempft"></span>
-        </span>
-      </a>
-      <h2 class="abschnitt">Bots</h2>
-      <div id="bot-karten" class="bot-raster"></div>
-      <h2 class="abschnitt">Absicherung</h2>
-      <a id="absicherung" class="absicherung karte" href="#system"></a>
+      <article class="karte wertkarte">
+        <p class="beschriftung" id="wert-titel">Gesamtwert</p>
+        <p class="riesenzahl" id="wert-gesamt">–</p>
+        <p class="wert-seit"><span id="wert-chip" class="chip">–</span> <span id="wert-gewinn"></span> <span class="gedaempft">seit Start</span></p>
+        <div class="kurven-kopf">
+          <span id="kurven-datum" class="gedaempft"></span>
+          <span id="kurven-legende" class="legende"></span>
+        </div>
+        <svg id="kurve" class="kurve" role="img" aria-label="Wertverlauf gegen SPY"></svg>
+        <div id="kurven-achse" class="kurven-achse"></div>
+      </article>
+
+      <div class="kachel-reihe drei">
+        <div class="kachel"><span class="beschriftung">Investiert</span><span id="kachel-investiert" class="kachel-wert">–</span>
+          <span class="balken"><i id="balken-investiert"></i></span></div>
+        <div class="kachel"><span class="beschriftung">Cash</span><span id="kachel-cash" class="kachel-wert">–</span>
+          <span id="kachel-cash-unter" class="klein gedaempft"></span></div>
+        <div class="kachel"><span class="beschriftung">Letzter Lauf</span><span id="kachel-lauf" class="kachel-wert">–</span>
+          <span id="kachel-lauf-unter" class="klein gedaempft"></span></div>
+      </div>
+
+      <div class="kachel-reihe zwei">
+        <a class="kachel sprung" href="#system">
+          <span class="zeile-zwischen"><span class="beschriftung">System</span><span class="pfeil">›</span></span>
+          <span id="sprung-system" class="sprung-satz"></span>
+          <span id="sprung-system-unter" class="klein gedaempft"></span>
+        </a>
+        <a class="kachel sprung" href="#bots">
+          <span class="zeile-zwischen"><span class="beschriftung">Bots</span><span class="pfeil">›</span></span>
+          <span id="sprung-bots" class="sprung-satz"></span>
+          <span id="sprung-bots-unter" class="klein gedaempft"></span>
+        </a>
+      </div>
+
+      <article class="karte liste-karte">
+        <div class="liste-kopf"><h2>Grösste Bewegungen</h2><a id="bewegungen-link" href="#bots"></a></div>
+        <ul id="bewegungen" class="positionen"></ul>
+      </article>
+
+      <p class="abschnitt">Absicherung</p>
+      <a id="absicherung" class="karte absicherung" href="#system"></a>
     </section>
 
-    <!-- ================================================= Bots -->
+    <!-- Bots-Liste (Vorlage 02) -->
     <section id="ansicht-bots" class="ansicht" aria-label="Bots" hidden>
       <div id="bot-liste"></div>
 
@@ -73,96 +110,56 @@
         </div>
         <p id="stop-msg" class="klein"></p>
       </section>
-
-      <!-- Strategie C: alles, was die bisherige Startseite zeigte. bots.js hängt es in die Karte von C
-           (Registry: detail = "strategie-c"). app.js füllt es wie bisher aus /api/status. -->
-      <div id="detail-strategie-c" class="bot-detail" hidden>
-        <p id="subtitle" class="klein gedaempft">Kandidat C · Vorwärtstest</p>
-        <span id="mode" class="badge">…</span>
-        <div id="stop-banner" class="banner danger" hidden>Notbremse aktiv – der Bot handelt nicht.</div>
-        <div id="error-banner" class="banner warn" hidden></div>
-
-        <div class="cards">
-          <div class="card"><span class="label">Wert C</span><span id="c-value" class="big">–</span><span id="c-sub" class="muted small"></span></div>
-          <div class="card"><span class="label">Seit Start</span><span id="c-ret" class="big">–</span><span id="spy-ret" class="muted small"></span></div>
-          <div class="card"><span class="label">Investiert</span><span id="c-inv" class="big">–</span><span id="c-cash" class="muted small"></span></div>
-          <div class="card"><span class="label">Letzter Lauf</span><span id="last-run" class="big small-big">–</span><span id="last-run-sub" class="muted small"></span></div>
-        </div>
-
-        <div class="panel">
-          <h3>Kapitalkurve</h3>
-          <svg id="chart" viewBox="0 0 600 240" preserveAspectRatio="none" role="img" aria-label="Kapitalkurve"></svg>
-          <div id="legend" class="legend"></div>
-        </div>
-
-        <div class="panel">
-          <h3>Bestehen-Kriterien <span id="test-state" class="muted small"></span></h3>
-          <ul id="checks" class="checks"></ul>
-        </div>
-
-        <div class="panel">
-          <h3>Positionen <span id="pos-count" class="muted small"></span></h3>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Symbol</th><th class="num">Stück</th><th class="num">Ø</th><th class="num">Kurs</th><th class="num">G/V</th><th>Stufen</th></tr></thead>
-              <tbody id="positions"></tbody>
-            </table>
-          </div>
-          <p id="excluded" class="muted small"></p>
-        </div>
-
-        <div class="panel">
-          <h3>Letzte Läufe</h3>
-          <ul id="runs" class="runs"></ul>
-        </div>
-
-        <div class="panel">
-          <h3>Verlauf <span class="muted small">Ausführungen, Warnungen, Fehler</span></h3>
-          <ul id="events" class="runs"></ul>
-        </div>
-
-        <p class="muted small">Stand Strategie C: <span id="generated">–</span></p>
-      </div>
     </section>
 
-    <!-- ================================================= System -->
+    <!-- Bot-Detailseite (Vorlage 03) -->
+    <section id="ansicht-bot" class="ansicht" aria-label="Bot" hidden>
+      <div id="bot-seite"></div>
+    </section>
+
+    <!-- System-Baum (Vorlage 04) -->
     <section id="ansicht-system" class="ansicht" aria-label="System" hidden>
-      <div class="karte skizze-karte">
+      <div class="karte baum">
         <svg id="skizze" role="img" aria-label="Skizze der Infrastruktur mit Statusfarben"></svg>
-        <p class="legende klein">
-          <span><i class="punkt gruen"></i>läuft</span>
-          <span><i class="punkt gelb"></i>stimmt etwas nicht</span>
-          <span><i class="punkt rot"></i>aus / nicht erreichbar</span>
-          <span><i class="punkt grau"></i>nicht eingerichtet</span>
-        </p>
       </div>
-      <div id="system-details"></div>
+      <p class="legende-zeile klein gedaempft">
+        <span><i class="punkt-klein gruen"></i>läuft</span>
+        <span><i class="punkt-klein gelb"></i>stimmt etwas nicht</span>
+        <span><i class="punkt-klein rot"></i>aus</span>
+        <span><i class="punkt-klein grau"></i>nicht eingerichtet</span>
+      </p>
+    </section>
+
+    <!-- Detailseite eines Kastens, z.B. Server (Vorlage 05) -->
+    <section id="ansicht-systemteil" class="ansicht" aria-label="Systemteil" hidden>
+      <div id="system-seite"></div>
     </section>
 
     <p class="fuss klein gedaempft">Nur zum Anschauen. Paper-Trading, kein echtes Geld.<br>Stand: <span id="stand">–</span></p>
+
   </main>
 
   <!-- feste Leiste unten: Links, keine Knöpfe -->
   <nav class="tabbar" aria-label="Reiter">
     <a href="#uebersicht" data-ansicht="uebersicht">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4zm0 7h6v-5H4zm10 0h6v-9h-6zm0-16v5h6V4z"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="12" width="4.5" height="9" rx="1.2"/><rect x="9.75" y="7.5" width="4.5" height="13.5" rx="1.2"/><rect x="16.5" y="3" width="4.5" height="18" rx="1.2"/></svg>
       <span>Übersicht</span>
     </a>
     <a href="#bots" data-ansicht="bots">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a1 1 0 0 1 1 1v1h4a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h4V3a1 1 0 0 1 1-1zM9 10a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm6 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm-5 5v1.5h4V15z"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3"/><circle cx="12" cy="2.5" r="1"/><rect x="5" y="6" width="14" height="12" rx="3"/><path d="M9 11v1M15 11v1M10 15h4M3 11v3M21 11v3"/></svg>
       <span>Bots</span>
     </a>
     <a href="#system" data-ansicht="system">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v6H4zm0 10h16v6H4zm3-8v2h2V6zm0 10v2h2v-2z"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6"/></svg>
       <span>System</span>
     </a>
   </nav>
 
-  <script src="/static/kern.js?v=7"></script>
-  <script src="/static/uebersicht.js?v=7"></script>
-  <script src="/static/bots.js?v=7"></script>
-  <script src="/static/system.js?v=7"></script>
-  <script src="/static/app.js?v=7"></script>
-  <script src="/static/notbremse.js?v=7"></script>
+  <script src="/static/kern.js?v=9"></script>
+  <script src="/static/uebersicht.js?v=9"></script>
+  <script src="/static/bots.js?v=9"></script>
+  <script src="/static/system.js?v=9"></script>
+  <script src="/static/app.js?v=9"></script>
+  <script src="/static/notbremse.js?v=9"></script>
 </body>
 </html>

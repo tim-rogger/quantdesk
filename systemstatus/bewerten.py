@@ -54,12 +54,15 @@ class Befund:
             self.stufe = stufe
 
 
-def zeile(titel: str, wert=None, *, zeit: float | None = None, zone: str | None = None) -> dict:
+def zeile(titel: str, wert=None, *, zeit: float | None = None, zone: str | None = None, farbe: str | None = None) -> dict:
     """Eine Zeile im Detail-Kasten. Entweder ein Text (wert) oder ein Zeitpunkt (zeit, Unix-Sekunden).
 
     Zeitpunkte formatiert erst die Seite – in der Zeitzone des Handys, mit Zeitzonen-Kürzel. `zone` ist eine
     zweite Zeitzone, die zusätzlich angezeigt wird (z.B. New York bei Bot-Läufen).
+    `farbe` (gelb/rot) färbt nur den Wert ein, ändert aber nicht die Farbe des Kastens.
     """
+    if farbe:
+        return zeile(titel, wert, zeit=zeit, zone=zone) | {"f": farbe}
     if zeit is not None:
         out = {"t": titel, "z": zeit}
         if zone:
@@ -254,12 +257,28 @@ def bewerte_server(s: dict) -> dict:
         zeile("Zeitzone", zone),
         zeile("Firewall (ufw)", {True: "aktiv", False: "AUS", None: "unbekannt"}[ufw]),
         zeile("Port 22 von aussen", {True: "OFFEN", False: "zu", None: "unbekannt"}[offen]),
-        zeile("Sicherheitsupdates offen", updates if ist_zahl(updates) else "unbekannt"),
+        zeile("Sicherheitsupdates offen", updates if ist_zahl(updates) else "unbekannt",
+              farbe=GELB if ist_zahl(updates) and updates > 0 else None),
     ]
     kurz = f"Platte {platte:.0f} % · RAM {ram:.0f} %" if platte is not None and ram is not None else "Messung unvollständig"
     if b.gruende:
         kurz = b.gruende[0]
-    return kasten("server", "Server quantdesk", b, kurz, zeilen)
+    return kasten("server", "Server quantdesk", b, kurz, zeilen, kacheln=server_kacheln(s, platte, ram))
+
+
+def server_kacheln(s: dict, platte: float | None, ram: float | None) -> list[dict]:
+    """Drei Kacheln oben auf der Server-Seite. `anteil` (0–1) ist der Füllstand des kleinen Balkens."""
+    last = s.get("last") or []
+    kerne = s.get("kerne")
+    cpu = last[1] if len(last) == 3 else None   # 5-Minuten-Last, wie bei der Ampel
+    return [
+        {"t": "CPU", "w": f"{cpu:.2f}" if cpu is not None else "–", "unter": f"{kerne} Kerne" if kerne else "",
+         "anteil": min(cpu / kerne, 1) if cpu is not None and kerne else None},
+        {"t": "RAM", "w": f"{ram:.0f} %" if ram is not None else "–", "unter": f"von {gb(s.get('ram_gesamt'))}",
+         "anteil": ram / 100 if ram is not None else None},
+        {"t": "Platte", "w": f"{platte:.0f} %" if platte is not None else "–", "unter": f"{gb(s.get('platte_frei'))} frei",
+         "anteil": platte / 100 if platte is not None else None},
+    ]
 
 
 def _minus(a, b):
@@ -286,7 +305,8 @@ def bewerte_tailscale(t: dict, jetzt: float) -> dict:
         zeile("Letzter Handshake", zeit=t["letzter_handshake"]) if t.get("letzter_handshake") else zeile("Letzter Handshake", "keiner"),
         zeile("Zertifikat gültig bis", zeit=ablauf) if ablauf else zeile("Zertifikat gültig bis", "unbekannt"),
     ]
-    kurz = b.gruende[0] if b.gruende else "verbunden"
+    handshake = t.get("letzter_handshake")
+    kurz = b.gruende[0] if b.gruende else f"verbunden · vor {dauer(jetzt - handshake)}" if handshake else "verbunden"
     return kasten("tailscale", "Tailscale-Tunnel", b, kurz, zeilen)
 
 
@@ -486,14 +506,39 @@ def bewerte_bot(eintrag: dict, daten: dict, jetzt: float) -> dict:
         zeile("Offene Positionen", anzahl),
     ] + [zeile("Letzter Vorschlag", text) for text in (status or {}).get("vorschlaege", [])] \
       + [zeile("Kurs", text) for text in (status or {}).get("kurse", [])]
+    if eintrag.get("automatisch_aktiv"):
+        zeilen.append(zeile("Hinweis", "In bots.toml als nicht eingerichtet markiert, hat aber Läufe – als aktiv angezeigt"))
     if b.gruende:
         kurz = b.gruende[0]
     else:
         kurz = f"{geld(investiert, waehrung)} · {anzahl} Pos."
+    wert = feld(status, eintrag.get("wert_feld", "c_account.value"))
     return kasten(kid, name, b, kurz, zeilen, modus=str(modus) if modus else None, letzter_lauf=lauf_zeit,
                   lauf_ok=ok is True if letzter else None, container=eintrag.get("container"),
-                  strategie_kurz=eintrag.get("strategie_kurz"), investiert=geld(investiert, waehrung),
-                  naechster_lauf=naechster, zone=zone, detail=eintrag.get("detail"))
+                  strategie_kurz=eintrag.get("strategie_kurz"), strategie=eintrag.get("strategie"),
+                  investiert=geld(investiert, waehrung), naechster_lauf=naechster, zone=zone,
+                  detail=eintrag.get("detail"), lauf_fills=(letzter or {}).get("fills"),
+                  zahlen=bot_zahlen(wert, budget, investiert, anzahl, waehrung),
+                  verlauf=[v for v in daten.get("verlauf") or [] if ist_zahl(v)],
+                  vorschlag=((status or {}).get("vorschlaege") or [None])[0])
+
+
+def bot_zahlen(wert, budget, investiert, positionen, waehrung: str) -> dict:
+    """Die Zahlen für die Bot-Karten als Zahlen (nicht als Text), damit die Seite sie selbst formatiert.
+    Rendite = Wert gegenüber Budget (also inkl. Gebühren und geschlossener Trades); fehlt eins, None."""
+    def zahl(x):
+        return x if ist_zahl(x) and math.isfinite(x) and abs(x) < PLATZHALTER_GRENZE else None
+    wert, budget, investiert = zahl(wert), zahl(budget), zahl(investiert)
+    return {
+        "wert": wert,
+        "budget": budget,
+        "investiert": investiert,
+        "rendite": wert / budget - 1 if wert is not None and budget else None,
+        "gewinn": wert - budget if wert is not None and budget is not None else None,
+        "anteil_investiert": investiert / (wert or budget) if investiert is not None and (wert or budget) else None,
+        "positionen": positionen if ist_zahl(positionen) else None,
+        "waehrung": waehrung,
+    }
 
 
 # ====================================================================== Backup und Totmannschalter

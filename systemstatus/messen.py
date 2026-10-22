@@ -290,11 +290,17 @@ def registry(pfad: str) -> list[dict]:
 def bot(deploy: str, eintrag: dict, jetzt: float | None = None) -> dict:
     """Dateien eines Bots lesen (nur lesen!). Pfade in der Registry sind relativ zu deploy/.
     nan/inf werden hier NICHT entfernt – bewerten.py soll sie sehen und rot melden."""
-    out: dict = {"eintrag": eintrag, "status": None, "laeufe": [], "fehler": ""}
+    out: dict = {"eintrag": eintrag, "status": None, "laeufe": [], "fehler": "", "verlauf": []}
     if not eintrag.get("eingerichtet"):
-        return out
+        if not hat_laeufe(deploy, eintrag):
+            return out
+        # Steht in der Registry "nicht eingerichtet", aber im Logbuch stehen echte Läufe: dann läuft er.
+        # (So stand Lotse grau da, obwohl er täglich lief.)
+        eintrag = eintrag | {"eingerichtet": True, "automatisch_aktiv": True}
+        out["eintrag"] = eintrag
     if eintrag.get("format") == "lotse-tagebuch":
         return _lotse(deploy, eintrag, out, time.time() if jetzt is None else jetzt)
+    out["verlauf"] = verlauf(deploy, eintrag)
     status_pfad = os.path.join(deploy, eintrag.get("status_datei", ""))
     laeufe_pfad = os.path.join(deploy, eintrag.get("laeufe_datei", ""))
     try:
@@ -313,6 +319,27 @@ def bot(deploy: str, eintrag: dict, jetzt: float | None = None) -> dict:
     return out
 
 
+def hat_laeufe(deploy: str, eintrag: dict) -> bool:
+    """Gibt es im Lauf-Protokoll des Bots mindestens einen Eintrag?"""
+    try:
+        return bool(lies_jsonl_ende(os.path.join(deploy, eintrag.get("laeufe_datei", "")), 5))
+    except OSError:
+        return False
+
+
+def verlauf(deploy: str, eintrag: dict) -> list[float]:
+    """Wertverlauf für die Mini-Kurve: die letzten 90 Werte aus `verlauf_datei` (Feld `verlauf_feld`).
+    Fehlt die Datei, gibt es eben keine Kurve."""
+    if not eintrag.get("verlauf_datei"):
+        return []
+    try:
+        zeilen = lies_jsonl_ende(os.path.join(deploy, eintrag["verlauf_datei"]), 90)
+    except OSError:
+        return []
+    feld_name = eintrag.get("verlauf_feld", "c_value")
+    return [z[feld_name] for z in zeilen if isinstance(z.get(feld_name), (int, float)) and not isinstance(z.get(feld_name), bool)]
+
+
 def _lotse(deploy: str, eintrag: dict, out: dict, jetzt: float) -> dict:
     """Lotse hat keine Statusdatei, sondern ein Tagebuch (siehe formate.lotse_tagebuch)."""
     try:
@@ -329,8 +356,8 @@ def _lotse(deploy: str, eintrag: dict, out: dict, jetzt: float) -> dict:
                                             eintrag.get("lauf_hoechstens_minuten", 30), budget)
     # bewerten.py liest die übersetzten Felder unter diesen Namen
     out["eintrag"] = eintrag | {"modus_feld": "modus", "investiert_feld": "investiert", "positionen_feld": "positionen",
-                                "budget_feld": "budget"}
-    out["status"], out["laeufe"] = status, laeufe
+                                "budget_feld": "budget", "wert_feld": "wert"}
+    out["status"], out["laeufe"], out["verlauf"] = status, laeufe, status["verlauf"]
     return out
 
 

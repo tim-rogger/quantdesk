@@ -16,11 +16,7 @@ function zeigeNotbremse(daten) {
   const stand = $("notbremse-stand");
   stand.textContent = `Aktiv seit ${zeit(halt.seit)}. Fortsetzen nur im Terminal auf dem Server:`;
   stand.appendChild(el("code", { class: "befehl" }, halt.fortsetzen || ""));
-  // Die Ampel auf der Übersicht darf nicht "Alles läuft" sagen, solange die Bremse gezogen ist.
-  // (Prüfung, weil die Übersicht parallel umgebaut wird – fehlt zeigeAmpel, bleibt wenigstens der rote Balken oben.)
-  if (typeof zeigeAmpel === "function") {
-    zeigeAmpel({ stufe: "rot", satz: "Notbremse aktiv", was: ["Beide Bots handeln nicht. Fortsetzen nur im Terminal."] });
-  }
+  // Die Ampel (Kopf, Übersicht, Systemkarte) setzt kern.js bei gezogener Bremse auf rot "Notbremse aktiv".
 }
 
 function bestaetigenZeigen(zeigen) {
@@ -36,14 +32,13 @@ async function bremseZiehen() {
       body: JSON.stringify({ pin: $("pin").value }) });
     const body = await res.json();
     msg.textContent = res.ok ? body.message : (body.detail || "Fehler");
-    msg.className = "klein " + (res.ok ? "ok" : "bad");
+    msg.className = "klein " + (res.ok ? "positiv" : "negativ");
   } catch (e) {
     msg.textContent = "Server nicht erreichbar.";
-    msg.className = "klein bad";
+    msg.className = "klein negativ";
   }
   $("pin").value = "";
-  ladeSystem();
-  load();  // Strategie C (app.js) zeigt den Stopp ebenfalls an
+  ladeAlles();
 }
 
 $("stop-form").addEventListener("submit", (ev) => {

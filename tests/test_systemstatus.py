@@ -343,9 +343,12 @@ def test_lotse_nicht_eingerichtet_ohne_container_ist_grau():
     assert k["bot-lotse"]["stufe"] == "grau" and k["c-lotse"]["stufe"] == "grau"
 
 
-def test_skizze_kennt_container_aus_der_registry():
+def test_skizze_kennt_container_und_bots_aus_den_daten():
+    """Die vier Infrastruktur-Container stehen fest (wie in der Vorlage); weitere Container und alle Bots kommen
+    aus system.json – ein neuer Bot in bots.toml erscheint im Baum ohne Codeänderung."""
     js = (ROOT / "dashboard" / "static" / "system.js").read_text(encoding="utf-8")
-    assert "bot.container" in js and "p._linien" in js and '"c-bot"' not in js  # kein fest verdrahteter Bot-Container
+    assert 'id.startsWith("c-") && !FESTE_CONTAINER.includes(id)' in js and 'k.id.startsWith("bot-")' in js
+    assert '"bot-c"' not in js and '"bot-lotse"' not in js and '"c-lotse"' not in js
 
 
 def test_dritter_bot_braucht_nur_einen_registry_eintrag(tmp_path):
@@ -706,3 +709,75 @@ waehrung = "USD"
         assert drei.get(feld_name) is not None, feld_name
     js = "".join((ROOT / "dashboard" / "static" / f).read_text(encoding="utf-8") for f in ("uebersicht.js", "bots.js"))
     assert 'startsWith("bot-")' in js and '"bot-c"' not in js and '"bot-lotse"' not in js  # keine fest verdrahteten Bots
+
+
+# ====================================================================== Auftrag 3: Zahlen für die neuen Seiten
+def test_bot_ohne_eingerichtet_aber_mit_laeufen_ist_aktiv(tmp_path):
+    """So stand Lotse grau da: Registry sagte "nicht eingerichtet", obwohl er täglich lief."""
+    (tmp_path / "state-lotse").mkdir()
+    (tmp_path / "state-lotse" / "laeufe.jsonl").write_text(
+        "".join(json.dumps(z) + "\n" for z in lotse_zeilen(1, "2026-10-08T04:30:01")), encoding="utf-8")
+    eintrag = {e["id"]: e for e in messen.registry(str(ROOT / "deploy" / "bots.toml"))}["lotse"] | {"eingerichtet": False}
+    jetzt = dt.datetime(2026, 10, 8, 12, 0, tzinfo=ZH).timestamp()
+    roh = beispiel(jetzt)
+    roh["container"]["lotse"] = dict(roh["container"]["bot"])
+    roh["bots"][1] = messen.bot(str(tmp_path), eintrag, jetzt)
+    lotse = kaesten(roh)["bot-lotse"]
+    assert lotse["stufe"] == "gruen" and lotse["modus"] == "VORSCHLAG"
+    assert any(z["t"] == "Hinweis" and "nicht eingerichtet" in z["w"] for z in lotse["zeilen"])
+
+
+def test_bot_ohne_eingerichtet_und_ohne_laeufe_bleibt_grau(tmp_path):
+    eintrag = {e["id"]: e for e in messen.registry(str(ROOT / "deploy" / "bots.toml"))}["lotse"] | {"eingerichtet": False}
+    roh = beispiel()
+    roh["bots"][1] = messen.bot(str(tmp_path), eintrag)
+    assert kaesten(roh)["bot-lotse"]["stufe"] == "grau"
+
+
+def test_bot_zahlen_fuer_karten(tmp_path):
+    roh = beispiel()
+    roh["bots"][0]["status"]["c_account"].update(value=265649.0, budget=264000.0, invested=62157.0)
+    roh["bots"][0]["verlauf"] = [264000.0, 265000.0, 265649.0]
+    bot = kaesten(roh)["bot-c"]
+    z = bot["zahlen"]
+    assert z["wert"] == 265649.0 and z["gewinn"] == 1649.0 and round(z["rendite"], 4) == 0.0062
+    assert round(z["anteil_investiert"], 3) == 0.234 and z["positionen"] == 2 and z["waehrung"] == "USD"
+    assert bot["verlauf"] == [264000.0, 265000.0, 265649.0]
+    roh["bots"][0]["status"]["c_account"]["value"] = float("nan")
+    z = kaesten(roh)["bot-c"]["zahlen"]
+    assert z["wert"] is None and z["rendite"] is None  # nan wird nie zu einer Zahl auf der Seite
+
+
+def test_verlauf_aus_snapshots(tmp_path):
+    (tmp_path / "s.jsonl").write_text("".join(json.dumps({"day": f"2026-10-0{i}", "c_value": 264000 + i * 100}) + "\n"
+                                              for i in range(1, 6)), encoding="utf-8")
+    assert messen.verlauf(str(tmp_path), {"verlauf_datei": "s.jsonl", "verlauf_feld": "c_value"}) == [
+        264100, 264200, 264300, 264400, 264500]
+    assert messen.verlauf(str(tmp_path), {"verlauf_datei": "fehlt.jsonl"}) == []
+
+
+def test_lotse_wert_und_verlauf_aus_gesamt():
+    zeilen = []
+    for nummer, gesamt in ((1, 300.0), (2, 299.4), (3, 301.2)):
+        zeilen += lotse_zeilen(nummer, f"2026-10-0{nummer + 5}T04:30:01")
+        zeilen[-1]["gesamt"] = gesamt
+    status, _ = formate.lotse_tagebuch(zeilen, [], [], 2e9, "America/New_York", 25, budget=300)
+    assert status["verlauf"] == [300.0, 299.4, 301.2] and status["wert"] == 301.2
+
+
+def test_server_kacheln_und_gelbe_sicherheitsupdates():
+    roh = beispiel()
+    roh["server"]["sicherheitsupdates"] = 3
+    server = kaesten(roh)["server"]
+    assert [k["t"] for k in server["kacheln"]] == ["CPU", "RAM", "Platte"]
+    assert server["kacheln"][2]["w"] == "40 %" and server["kacheln"][2]["unter"] == "60.0 GB frei"
+    assert server["stufe"] == "gruen"  # offene Updates färben nur die Zahl, nicht den Kasten
+    updates = next(z for z in server["zeilen"] if z["t"] == "Sicherheitsupdates offen")
+    assert updates["f"] == "gelb" and updates["w"] == "3"
+    roh["server"]["sicherheitsupdates"] = 0
+    assert "f" not in next(z for z in kaesten(roh)["server"]["zeilen"] if z["t"] == "Sicherheitsupdates offen")
+
+
+def test_registry_bot_c_heisst_wie_in_der_vorlage():
+    c = {e["id"]: e for e in messen.registry(str(ROOT / "deploy" / "bots.toml"))}["c"]
+    assert c["name"] == "Bot C" and c["verlauf_datei"] == "state/data/snapshots.jsonl" and c["detail"] == "strategie-c"

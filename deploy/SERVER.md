@@ -272,9 +272,10 @@ Zusätzlich schickt der Server selbst um 11:00 New York einen Push, wenn der Han
 
 ## 12. Die App: Übersicht, Bots, System
 
-Das Dashboard ist eine App mit drei Reitern unten: **Übersicht** (Ampel, eine Karte pro Bot, Absicherung),
-**Bots** (jeder Bot im Detail, Strategie C mit Kapitalkurve und Kriterien) und **System** (die Infrastruktur als
-Skizze). Jeder Kasten ist grün, gelb, rot oder grau (grau = noch nicht eingerichtet). Die Daten sammelt ein kleiner
+Das Dashboard ist eine App mit drei Reitern unten (Vorlagen: `docs/design/`): **Übersicht** (Wert von Bot C mit
+Kurve gegen SPY, Kacheln, grösste Bewegungen, Absicherung), **Bots** (Liste; antippen öffnet die Detailseite mit
+Positionen, Details, Kriterien) und **System** (die Infrastruktur als Baum; Server, Tunnel, Container usw. haben eine
+eigene Detailseite). Jeder Kasten ist grün, gelb, rot oder grau (grau = noch nicht eingerichtet). Die Daten sammelt ein kleiner
 Dienst **auf dem Server selbst**, nicht im Dashboard-Container. Das Dashboard liest nur die Datei, die er schreibt
 (`state/system/system.json`). Die App ist **nur zum Anschauen**; einzige Aktion ist die Notbremse (Abschnitt 13), die nur
 anhalten kann. Neu starten machst du weiterhin im Terminal.
