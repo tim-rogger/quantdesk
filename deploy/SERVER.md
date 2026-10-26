@@ -324,6 +324,43 @@ Danach handeln beide Bots beim nächsten geplanten Lauf wieder normal.
 > werden. Muss es sofort sein: Orders im IBKR-Portal stornieren, oder einen Lauf von Hand starten
 > (`docker compose exec bot python run_daily.py reconcile --force`).
 
+## 14. Gateway-Selbstheilung: wieder einloggen nach IBKR-Wartung
+
+IBKR loggt das Gateway bei Wartungen aus. Zwei Dinge holen es zurück:
+
+1. **Im Gateway selbst** (`docker-compose.yml`): täglicher Neustart um 23:59 New York **ohne** neue Anmeldung
+   (`AUTO_RESTART_TIME`) und sonntags um 07:05 New York ein **Kaltstart mit voller Anmeldung**
+   (`TWS_COLD_RESTART`). Den verlangt IBKR einmal pro Woche.
+2. **Der Gateway-Wächter** (`systemstatus/waechter.py`), ein kleiner Dienst auf dem Server: Ist das Gateway
+   ausserhalb der Wartungszeiten 10 Minuten am Stück nicht mit einem DU-Konto eingeloggt, startet er den
+   Gateway-Container neu und schickt einen Push. Höchstens 2 Neustarts hintereinander und 4 pro Tag – danach ein
+   Push „lässt sich nicht einloggen – bitte prüfen“, und er hört auf. Er handelt nie und verkauft nie. Einen von Hand
+   gestoppten Gateway-Container startet er nicht.
+
+Einmalig einrichten (nach `git pull`):
+```bash
+$ cd ~/quantdesk/deploy && docker compose up -d                 # Gateway mit Kaltstart-Einstellung (meldet sich neu an)
+$ sudo systemctl restart quantdesk-systemstatus                  # Sammler: hängt nie mehr am Gateway
+$ sudo cp ~/quantdesk/deploy/gatewaywaechter.service /etc/systemd/system/quantdesk-gatewaywaechter.service
+$ sudo systemctl daemon-reload && sudo systemctl enable --now quantdesk-gatewaywaechter
+$ cd ~/quantdesk && sudo python3 -m systemstatus.waechter --einmal   # zeigt: eingeloggt? Wartungsfenster? was er täte
+```
+Prüfen, ob das Gateway die Kaltstart-Zeit übernommen hat (es muss eine Zeile mit `07:05` kommen):
+```bash
+$ docker compose exec ib-gateway sh -c 'grep -ri "ColdRestartTime" /home/ibgateway 2>/dev/null'
+```
+**Ernstfall üben**, ohne auf die nächste IBKR-Wartung zu warten (startet das Gateway einmal neu, harmlos):
+```bash
+$ cd ~/quantdesk && sudo python3 -m systemstatus.waechter --testlauf
+```
+Es kommen zwei Pushes: „Gateway neu gestartet (Testlauf)“ und nach 1–3 Minuten „wieder eingeloggt (Testlauf)“.
+Kommt stattdessen „lässt sich nicht einloggen“: `docker compose logs --tail 100 ib-gateway` – oft wartet IBKR
+dann auf eine Bestätigung in IBKR Mobile.
+
+- Läuft der Wächter? `systemctl status quantdesk-gatewaywaechter`, Meldungen: `journalctl -u quantdesk-gatewaywaechter -n 50`
+- In der App: System → ib-gateway → „Selbstheilung“ (aktiv / läuft nicht / aufgegeben) und letzter automatischer Neustart.
+- Abschalten (z.B. bei Arbeiten am Gateway): `sudo systemctl stop quantdesk-gatewaywaechter`
+
 ---
 
 ## Einmalig: Update nach dem ersten Server-Lauf (08.10.2026)
@@ -358,6 +395,7 @@ etwas anderes: **nicht** weitermachen, Bericht an Claude schicken. Notweg: die u
 | Lauf sofort | `docker compose exec bot python run_daily.py trade --force` |
 | Monatsreport | `docker compose exec bot python forward_test.py report` |
 | Notbremse aufheben | `rm -f state/halt/HALT state/data/STOP` (siehe Abschnitt 13) |
+| Gateway-Wächter | `systemctl status quantdesk-gatewaywaechter` (siehe Abschnitt 14) |
 | Update | `git pull && sudo ./prepare.sh && docker compose up -d --build` |
 | Backup-Stände | `docker compose exec bot python -m quantdesk.backup snapshots` |
 

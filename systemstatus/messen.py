@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import os
 import re
 import shutil
@@ -16,11 +17,14 @@ import socket
 import sqlite3
 import ssl
 import subprocess
+import threading
 import time
 import tomllib
 import urllib.request
 
 from systemstatus import formate, tws
+
+log = logging.getLogger("systemstatus")
 
 COMPOSE_PROJEKT = "quantdesk"
 DASHBOARD_URL = "http://127.0.0.1:8080/healthz"   # wie in docker-compose.yml veröffentlicht
@@ -401,12 +405,24 @@ def totmann(env_pfad: str, logs: str, laeufe: list[dict]) -> dict:
 
 
 # ====================================================================== alles
+def lies_json(pfad: str) -> dict | None:
+    """Eine kleine JSON-Datei lesen. Fehlt sie oder ist sie kaputt: None."""
+    try:
+        with open(pfad, encoding="utf-8") as f:
+            wert = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return wert if isinstance(wert, dict) else None
+
+
 class Zwischenspeicher:
     """Langsame Messungen nicht alle 30 s wiederholen."""
 
     def __init__(self, uhr=time.monotonic):
         self._werte: dict = {}
         self._uhr = uhr
+        self._laufend: set[str] = set()
+        self._sperre = threading.Lock()
 
     def hole(self, name: str, alle_sekunden: float, funktion):
         jetzt = self._uhr()
@@ -416,21 +432,80 @@ class Zwischenspeicher:
         self._werte[name] = (jetzt, wert)
         return wert
 
+    def hole_im_hintergrund(self, name: str, alle_sekunden: float, funktion, ersatz):
+        """Für sehr langsame Messungen (apt-check, Docker-Logs): Sie laufen in einem eigenen Faden.
+        Zurück kommt sofort der letzte bekannte Wert (anfangs `ersatz`) – der Zyklus wartet nie darauf."""
+        jetzt = self._uhr()
+        faellig = name not in self._werte or jetzt - self._werte[name][0] >= alle_sekunden
+        with self._sperre:
+            if faellig and name not in self._laufend:
+                self._laufend.add(name)
+                threading.Thread(target=self._im_hintergrund, args=(name, funktion), daemon=True,
+                                 name=f"messung-{name}").start()
+        return self._werte[name][1] if name in self._werte else ersatz
+
+    def _im_hintergrund(self, name: str, funktion) -> None:
+        try:
+            wert = funktion()
+            self._werte[name] = (self._uhr(), wert)
+        except Exception as fehler:  # eine kaputte Messung darf nichts anderes stören
+            log.warning("Messung %s fehlgeschlagen: %s", name, type(fehler).__name__)
+        finally:
+            with self._sperre:
+                self._laufend.discard(name)
+
+
+def mit_frist(name: str, sekunden: float, funktion, ersatz):
+    """Eine Messung mit harter Frist. Hängt sie länger als `sekunden` oder wirft sie einen Fehler, kommt
+    `ersatz` zurück (z.B. "unbekannt") – und der Rest des Zyklus läuft trotzdem weiter.
+
+    Die Messung läuft dafür in einem eigenen Faden. Hängt sie wirklich, bleibt der Faden im Hintergrund
+    liegen, hält aber niemanden auf.
+    """
+    ergebnis: dict = {}
+
+    def arbeiten():
+        try:
+            ergebnis["wert"] = funktion()
+        except Exception as fehler:
+            ergebnis["fehler"] = fehler
+
+    faden = threading.Thread(target=arbeiten, daemon=True, name=f"messung-{name}")
+    faden.start()
+    faden.join(sekunden)
+    if faden.is_alive():
+        log.warning("Messung %s: Zeitlimit (%s s) – als unbekannt gemeldet", name, sekunden)
+        return ersatz
+    if "fehler" in ergebnis:
+        log.warning("Messung %s fehlgeschlagen: %s", name, type(ergebnis["fehler"]).__name__)
+        return ersatz
+    return ergebnis["wert"]
+
+
+# Fristen in Sekunden – jede Messung höchstens so lange. Zusammen bleibt ein Zyklus deutlich unter 2 Minuten.
+FRIST = {"server": 20, "tailscale": 20, "zertifikat": 10, "container": 40, "ib": 10, "bot": 15,
+         "dashboard": 8, "ntfy": 8, "datei": 5}
+
 
 def sammeln(deploy: str, speicher: Zwischenspeicher, merker: dict) -> dict:
     jetzt = time.time()
     env_pfad = os.path.join(deploy, ".env")
-    srv = server()
-    srv["sicherheitsupdates"] = speicher.hole("updates", 30 * 60, sicherheitsupdates)
-    ts = tailscale()
-    ts["zertifikat_ablauf"] = speicher.hole("zertifikat", 60 * 60, lambda: zertifikat_ablauf(ts["_dns"], ts["_ip"])) \
-        if ts.get("_dns") else None
-    con = container(merker, jetzt)
+    srv = mit_frist("server", FRIST["server"], server, {"_fehler": "Server-Messung abgebrochen (Zeitlimit oder Fehler)"})
+    srv["sicherheitsupdates"] = speicher.hole_im_hintergrund("updates", 30 * 60, sicherheitsupdates, None)
+    ts = mit_frist("tailscale", FRIST["tailscale"], tailscale, {"verbunden": None})
+    ts["zertifikat_ablauf"] = speicher.hole_im_hintergrund(
+        "zertifikat", 60 * 60, lambda: zertifikat_ablauf(ts.get("_dns"), ts.get("_ip")), None) if ts.get("_dns") else None
+    con = mit_frist("container", FRIST["container"], lambda: container(merker, jetzt),
+                    {"_fehler": "Docker antwortet nicht (Zeitlimit oder Fehler)"})
     gateway_ip = (con.get("ib-gateway") or {}).get("_ip")
-    ib = speicher.hole("ib", 2 * 60, lambda: ib_gateway(gateway_ip)) | {"erwartet": erwartetes_konto(env_pfad)}
-    eintraege = registry(os.path.join(deploy, "bots.toml"))
-    bots = [bot(deploy, e, jetzt) for e in eintraege]
-    logs_8_tage = speicher.hole("logs", 10 * 60, lambda: bot_logs(8 * 24))
+    ib_ersatz = {"port_offen": None, "konten": None, "fehler": "Gateway-Abfrage abgebrochen (Zeitlimit)", "geprueft": jetzt}
+    ib = speicher.hole("ib", 2 * 60, lambda: mit_frist("ib", FRIST["ib"], lambda: ib_gateway(gateway_ip), ib_ersatz))
+    ib = ib | {"erwartet": mit_frist("env", FRIST["datei"], lambda: erwartetes_konto(env_pfad), None)}
+    eintraege = mit_frist("registry", FRIST["datei"], lambda: registry(os.path.join(deploy, "bots.toml")), [])
+    bots = [mit_frist(f"bot-{e.get('id')}", FRIST["bot"], lambda e=e: bot(deploy, e, jetzt),
+                      {"eintrag": e, "status": None, "laeufe": [], "verlauf": [],
+                       "fehler": "Dateien nicht lesbar (Zeitlimit oder Fehler)"}) for e in eintraege]
+    logs_8_tage = speicher.hole_im_hintergrund("logs", 10 * 60, lambda: bot_logs(8 * 24), "")
     logs_48_h = "\n".join(z for z in logs_8_tage.splitlines()
                           if (iso_zu_unix(z.split(" ", 1)[0]) or 0) > jetzt - 48 * 3600)
     c_laeufe = next((b["laeufe"] for b in bots if b["eintrag"].get("id") == "c"), [])
@@ -439,10 +514,15 @@ def sammeln(deploy: str, speicher: Zwischenspeicher, merker: dict) -> dict:
         "server": srv,
         "tailscale": ts,
         "container": con,
-        "dashboard_antwortet": dashboard_antwortet(),
-        "ntfy": ntfy(os.path.join(deploy, "ntfy-data"), merker),
+        "dashboard_antwortet": mit_frist("dashboard", FRIST["dashboard"], dashboard_antwortet, False),
+        "ntfy": mit_frist("ntfy", FRIST["ntfy"], lambda: ntfy(os.path.join(deploy, "ntfy-data"), merker),
+                          {"erreichbar": None, "letzte_nachricht": merker.get("ntfy_letzte")}),
         "ib": ib,
+        "waechter": mit_frist("waechter", FRIST["datei"],
+                              lambda: lies_json(os.path.join(deploy, "state", "system", "waechter.json")), None),
         "bots": bots,
-        "backup": backup(env_pfad, logs_8_tage),
-        "totmann": totmann(env_pfad, logs_48_h, c_laeufe),
+        "backup": mit_frist("backup", FRIST["datei"], lambda: backup(env_pfad, logs_8_tage),
+                            {"eingerichtet": True, "letzter_snapshot": None}),
+        "totmann": mit_frist("totmann", FRIST["datei"], lambda: totmann(env_pfad, logs_48_h, c_laeufe),
+                             {"eingerichtet": True, "ping_fehler": None, "letzter_versuch": None}),
     }

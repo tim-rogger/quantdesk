@@ -20,6 +20,15 @@ const STUFE_TEXT = { gruen: "grün – läuft", gelb: "gelb – stimmt etwas nic
 const NOTBREMSE_AMPEL = { stufe: "rot", satz: "Notbremse aktiv", was: ["Beide Bots handeln nicht. Fortsetzen nur im Terminal."] };
 
 // Zusatz-Inhalte einzelner Bots (Registry-Feld "detail"), z.B. DETAILS["strategie-c"] in app.js
+// Abzeichen oben auf der Übersicht, je nach Konto-Zustand vom Sammler (bewerten.konto_zustand).
+// Rot nur, wenn wirklich ein falsches Konto GELESEN wurde – "Gateway ausgeloggt" ist "unbekannt", kein Alarm.
+const KONTO_ABZEICHEN = {
+  paper: { klasse: "paper", text: "PAPER" },
+  kein_paper: { klasse: "echt", text: "KEIN PAPER-KONTO" },
+  falsches_konto: { klasse: "echt", text: "FALSCHES KONTO" },
+  unbekannt: { klasse: "unbekannt", text: "Konto unbekannt" },
+};
+
 const DETAILS = {};
 
 let systemDaten = null;  // zuletzt erfolgreich geladene system.json (vom Sammler)
@@ -208,9 +217,10 @@ function zeigeKopf(a) {
   if (a.ansicht === "uebersicht") {
     const konto = kastenMitId("ibkr");
     $("untertitel").textContent = `QuantDesk · ${wertAusZeilen(konto, "Konto") || "–"}`;
+    const abzeichen = KONTO_ABZEICHEN[(konto && konto.konto_zustand) || "unbekannt"] || KONTO_ABZEICHEN.unbekannt;
     pille.hidden = false;
-    pille.className = "pille " + (konto && konto.paper ? "paper" : konto && konto.stufe === "rot" ? "echt" : "");
-    pille.textContent = konto && konto.paper ? "PAPER" : konto && konto.stufe === "rot" ? "NICHT PAPER" : "PAPER ?";
+    pille.className = "pille " + abzeichen.klasse;
+    pille.textContent = abzeichen.text;
   }
   if (a.ansicht === "bots") {
     const bots = kaesten.filter((k) => k.id.startsWith("bot-"));

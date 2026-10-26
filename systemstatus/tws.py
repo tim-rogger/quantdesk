@@ -30,9 +30,14 @@ def nachricht(felder: list[str]) -> bytes:
     return struct.pack(">I", len(inhalt)) + inhalt
 
 
-def _genau(sock: socket.socket, anzahl: int) -> bytes:
+def _genau(sock: socket.socket, anzahl: int, ende: float) -> bytes:
+    """Genau `anzahl` Bytes lesen – aber nie über die Frist `ende` (time.monotonic) hinaus."""
     daten = b""
     while len(daten) < anzahl:
+        rest = ende - time.monotonic()
+        if rest <= 0:
+            raise TimeoutError("Frist abgelaufen")
+        sock.settimeout(rest)
         stueck = sock.recv(anzahl - len(daten))
         if not stueck:
             raise ConnectionError("Verbindung vom Gateway geschlossen")
@@ -40,11 +45,11 @@ def _genau(sock: socket.socket, anzahl: int) -> bytes:
     return daten
 
 
-def lies_nachricht(sock: socket.socket) -> list[str]:
-    laenge = struct.unpack(">I", _genau(sock, 4))[0]
+def lies_nachricht(sock: socket.socket, ende: float) -> list[str]:
+    laenge = struct.unpack(">I", _genau(sock, 4, ende))[0]
     if laenge > 1_000_000:
         raise ValueError("unplausible Nachrichtenlänge")
-    text = _genau(sock, laenge).decode("utf-8", errors="replace")
+    text = _genau(sock, laenge, ende).decode("utf-8", errors="replace")
     return text.split("\0")[:-1]
 
 
@@ -53,23 +58,26 @@ def konten_abfragen(host: str, port: int, client_id: int = CLIENT_ID, timeout: f
 
     port_offen=True und konten=None heisst: es nimmt jemand ab (socat im Container), aber das Gateway
     selbst antwortet nicht – meistens, weil es (noch) nicht eingeloggt ist.
+
+    Harte Frist: Die GANZE Abfrage (Verbindung, Begrüssung, Warten auf die Konten) dauert höchstens
+    `timeout` Sekunden. Ein ausgeloggtes oder hängendes Gateway darf den Sammler nie aufhalten.
     """
+    ende = time.monotonic() + timeout
     try:
         sock = socket.create_connection((host, port), timeout=timeout)
     except OSError:
         return {"port_offen": False, "konten": None, "fehler": "keine TCP-Verbindung"}
     with sock:
         try:
-            sock.settimeout(timeout)
             sock.sendall(b"API\0" + struct.pack(">I", len(VERSIONEN)) + VERSIONEN)
-            lies_nachricht(sock)  # Version und Uhrzeit des Gateways – brauchen wir nicht
+            lies_nachricht(sock, ende)  # Version und Uhrzeit des Gateways – brauchen wir nicht
             sock.sendall(nachricht([START_API, "2", str(client_id), ""]))
-            ende = time.monotonic() + timeout
-            while time.monotonic() < ende:
-                felder = lies_nachricht(sock)
+            while True:
+                felder = lies_nachricht(sock, ende)
                 if len(felder) >= 3 and felder[0] == MANAGED_ACCOUNTS:
                     konten = [k.strip().upper() for k in felder[2].split(",") if k.strip()]
                     return {"port_offen": True, "konten": konten, "fehler": ""}
-            return {"port_offen": True, "konten": None, "fehler": "keine Kontonummer gemeldet"}
+        except TimeoutError:
+            return {"port_offen": True, "konten": None, "fehler": "Gateway antwortet nicht (Zeitlimit)"}
         except (OSError, ValueError, struct.error):
             return {"port_offen": True, "konten": None, "fehler": "Gateway antwortet nicht"}
