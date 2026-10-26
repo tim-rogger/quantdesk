@@ -217,6 +217,8 @@ def port22_offen(regeln: list[str]) -> bool:
 
 def bewerte_server(s: dict) -> dict:
     b = Befund()
+    if s.get("_fehler"):  # die ganze Messung ist abgebrochen (siehe messen.mit_frist)
+        b.rot(s["_fehler"])
     platte = prozent(_minus(s.get("platte_gesamt"), s.get("platte_frei")), s.get("platte_gesamt"))
     ram = prozent(_minus(s.get("ram_gesamt"), s.get("ram_frei")), s.get("ram_gesamt"))
     last = s.get("last") or []
@@ -389,13 +391,16 @@ def bewerte_ib(c: dict | None, ib: dict, jetzt: float) -> tuple[dict, dict, list
     konten = ib.get("konten")
 
     if not c or c.get("zustand") != "running":
-        api.rot("Gateway-Container läuft nicht")
+        unbekannt = str((c or {}).get("zustand", "")).startswith("unbekannt")
+        api.rot("Gateway-Container: Zustand unbekannt" if unbekannt else "Gateway-Container läuft nicht")
     if alt:
         api.gelb("Prüfung veraltet")
     if ib.get("port_offen") is False:
         api.rot("Port 4004 zu")
     elif ib.get("port_offen") and konten is None:
         api.rot("Port offen, Gateway antwortet nicht – nicht eingeloggt?")
+    elif ib.get("port_offen") is None and ib.get("fehler"):
+        api.rot(ib["fehler"])  # die Abfrage selbst ist abgebrochen
 
     if konten is None:
         konto.rot("nicht eingeloggt – keine Kontonummer")
@@ -420,8 +425,27 @@ def bewerte_ib(c: dict | None, ib: dict, jetzt: float) -> tuple[dict, dict, list
                     zeitzeile]
     api_kasten = kasten("tws-api", "TWS-API :4004", api, api.gruende[0] if api.gruende else "antwortet", api_zeilen)
     konto_kurz = konto.gruende[0] if konto.gruende else f"{maskiert} · Paper"
-    konto_kasten = kasten("ibkr", "IBKR-Konto", konto, konto_kurz, konto_zeilen, paper=paper and konto.stufe != ROT)
+    zustand = konto_zustand(konten, erwartet)
+    konto_kasten = kasten("ibkr", "IBKR-Konto", konto, konto_kurz, konto_zeilen, paper=zustand == "paper",
+                          konto_zustand=zustand)
     return api_kasten, konto_kasten, warnungen
+
+
+def konto_zustand(konten: list[str] | None, erwartet: str | None) -> str:
+    """Wofür das Abzeichen oben steht. Der rote Alarm erscheint NUR, wenn wirklich ein Konto gelesen wurde.
+
+        paper           Konto gelesen, beginnt mit DU und ist (falls gesetzt) die IBKR_ACCOUNT_ID
+        kein_paper      Konto gelesen, beginnt NICHT mit DU – der echte Alarm
+        falsches_konto  Konto gelesen, beginnt mit DU, ist aber nicht die IBKR_ACCOUNT_ID
+        unbekannt       nichts gelesen (Gateway ausgeloggt oder nicht erreichbar) – kein Alarm, nur "weiss nicht"
+    """
+    if not konten:
+        return "unbekannt"
+    if any(not ist_paper_konto(k) for k in konten):
+        return "kein_paper"
+    if erwartet and erwartet not in konten:
+        return "falsches_konto"
+    return "paper"
 
 
 def pruefe_konto(konten: list[str], erwartet: str | None, konto: Befund) -> list[str]:
@@ -614,7 +638,7 @@ def bewerten(roh: dict) -> dict:
     """Rohdaten (messen.sammeln) -> Inhalt von system.json."""
     jetzt = roh["jetzt"]
     tailscale = roh.get("tailscale") or {}
-    container = roh.get("container") or {}
+    container = container_oder_unbekannt(roh.get("container") or {}, roh.get("bots") or [])
     api, konto, warnungen = bewerte_ib(container.get("ib-gateway"), roh.get("ib") or {}, jetzt)
     kaesten = [
         bewerte_geraet("iPhone", tailscale.get("geraete") or []),
@@ -624,7 +648,8 @@ def bewerten(roh: dict) -> dict:
         bewerte_ntfy(container.get("ntfy"), roh.get("ntfy") or {}, jetzt),
         bewerte_dashboard(container.get("dashboard"), roh.get("dashboard_antwortet"), jetzt),
         bewerte_container("bot", container.get("bot"), jetzt),
-        bewerte_container("ib-gateway", container.get("ib-gateway"), jetzt),
+        bewerte_container("ib-gateway", container.get("ib-gateway"), jetzt,
+                          zusatz_zeilen=waechter_zeilen(roh.get("waechter"), jetzt)),
         api,
         konto,
     ]
@@ -638,6 +663,55 @@ def bewerten(roh: dict) -> dict:
         "erzeugt_utc": dt.datetime.fromtimestamp(jetzt, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "warnungen": warnungen,
         "zaehler": zaehler,
+        "ampel": ampel(kaesten),
+        "kaesten": kaesten,
+    })
+
+
+WAECHTER_MAX_ALTER = 5 * 60  # Sekunden; älter = der Wächter-Dienst läuft wohl nicht
+
+
+def waechter_zeilen(w: dict | None, jetzt: float) -> list[dict]:
+    """Zeilen zur Selbstheilung (systemstatus/waechter.py) im Kasten ib-gateway. Färbt nur die Werte, nicht den
+    Kasten: ob das Gateway gesund ist, entscheidet die Kontoprüfung, nicht der Wächter."""
+    if not w:
+        return [zeile("Selbstheilung", "nicht eingerichtet", farbe=GELB)]
+    pruefung = (w.get("letzte_pruefung") or {}).get("zeit")
+    if not ist_zahl(pruefung) or jetzt - pruefung > WAECHTER_MAX_ALTER:
+        zeilen = [zeile("Selbstheilung", "Wächter läuft nicht", farbe=ROT)]
+    elif w.get("aufgegeben"):
+        zeilen = [zeile("Selbstheilung", "aufgegeben – Gateway lässt sich nicht einloggen", farbe=ROT)]
+    else:
+        zeilen = [zeile("Selbstheilung", "aktiv")]
+    if ist_zahl(w.get("letzter_neustart")):
+        zeilen.append(zeile("Letzter automatischer Neustart", zeit=w["letzter_neustart"]))
+    zeilen.append(zeile("Automatische Neustarts heute", w.get("neustarts_heute", 0)))
+    return zeilen
+
+
+def container_oder_unbekannt(container: dict, bots: list[dict]) -> dict:
+    """Konnte Docker nicht gelesen werden (Messung abgebrochen), steht bei jedem Container "Zustand unbekannt"
+    statt des irreführenden "Container fehlt"."""
+    fehler = container.get("_fehler")
+    if not fehler:
+        return container
+    namen = list(CONTAINER) + [b["eintrag"].get("container") for b in bots if b["eintrag"].get("container")]
+    return {name: {"zustand": f"unbekannt – {fehler}"} for name in namen}
+
+
+def notfall(jetzt: float, fehler: str) -> dict:
+    """Inhalt von system.json, wenn Sammeln oder Bewerten selbst scheitert. Die Datei bleibt so trotzdem
+    frisch, und die Seite zeigt ehrlich "Sammler: Messung fehlgeschlagen" statt alter Daten."""
+    b = Befund()
+    b.rot(f"Messung fehlgeschlagen ({fehler})")
+    kaesten = [kasten("sammler", "Sammler", b, b.gruende[0],
+                      [zeile("Was tun", "journalctl -u quantdesk-systemstatus -n 50")])]
+    return entschaerfen({
+        "version": 1,
+        "erzeugt": jetzt,
+        "erzeugt_utc": dt.datetime.fromtimestamp(jetzt, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "warnungen": [],
+        "zaehler": {GRUEN: 0, GELB: 0, ROT: 1, GRAU: 0},
         "ampel": ampel(kaesten),
         "kaesten": kaesten,
     })

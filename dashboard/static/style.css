@@ -78,6 +78,8 @@ body.veraltet main, body.veraltet #kopf-pille { filter: grayscale(1); opacity: 0
 .pille.paper { background: var(--gelb-flaeche); color: var(--gelb-text); }
 .pille.probe { background: color-mix(in srgb, var(--akzent) 18%, transparent); color: var(--akzent); }
 .pille.echt { background: var(--rot); color: #fff; }
+/* Konto unbekannt (Gateway ausgeloggt): neutral, kein Alarm */
+.pille.unbekannt { background: var(--flaeche-2); color: var(--text-2); letter-spacing: 0; }
 .pille.gruen { background: var(--gruen-flaeche); color: var(--gruen); letter-spacing: 0; }
 .pille.gelb { background: var(--gelb-flaeche); color: var(--gelb-text); letter-spacing: 0; }
 .pille.rot { background: var(--rot-flaeche); color: var(--rot); letter-spacing: 0; }

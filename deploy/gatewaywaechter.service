@@ -1,0 +1,33 @@
+# systemd-Dienst für den Gateway-Wächter (systemstatus/waechter.py): meldet sich das IB Gateway nach einer
+# IBKR-Wartung nicht von selbst wieder an, startet er den Gateway-Container neu und schickt einen Push.
+# Einrichten (einmalig, siehe SERVER.md Abschnitt 14):
+#   sudo cp ~/quantdesk/deploy/gatewaywaechter.service /etc/systemd/system/quantdesk-gatewaywaechter.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now quantdesk-gatewaywaechter
+# Pfade gehen von /home/tim/quantdesk aus – anderer Ort: die Zeilen mit /home/tim anpassen.
+#
+# Läuft als root, weil "docker restart" den Docker-Socket braucht. Dafür eng eingezäunt:
+#   - schreiben darf er nur in deploy/state/system/ (waechter.json), der Rest ist für ihn schreibgeschützt
+#   - Netzwerk nur lokal: localhost (ntfy), Docker-interne Adressen (Gateway). Kein Internet, nicht von aussen erreichbar.
+#   - er handelt nie und verkauft nie – er startet höchstens den Gateway-Container neu.
+[Unit]
+Description=QuantDesk Gateway-Wächter (Selbstheilung nach IBKR-Logout)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tim/quantdesk
+ExecStart=/usr/bin/python3 -m systemstatus.waechter --deploy /home/tim/quantdesk/deploy
+Restart=always
+RestartSec=30
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/tim/quantdesk/deploy/state/system
+IPAddressDeny=any
+IPAddressAllow=localhost 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+
+[Install]
+WantedBy=multi-user.target

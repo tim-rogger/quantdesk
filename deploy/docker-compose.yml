@@ -54,7 +54,11 @@ services:
       TWS_ACCEPT_INCOMING: reject       # nur Verbindungen aus dem Container selbst (socat) sind vertrauenswürdig
       TIME_ZONE: America/New_York
       TZ: America/New_York
-      AUTO_RESTART_TIME: "11:59 PM"     # tägliche Neustart-Zeit, IBC loggt wieder ein
+      AUTO_RESTART_TIME: "11:59 PM"     # täglicher Neustart der Gateway-App (im Container), OHNE neue Anmeldung
+      # Sonntags verlangt IBKR eine volle Neuanmeldung – der tägliche Neustart reicht dann nicht mehr.
+      # Kaltstart = Gateway komplett neu, mit Benutzer + Passwort (IBC "ColdRestartTime", ab IBC 3.19).
+      # Uhrzeit in TIME_ZONE (New York), muss nach 01:00 liegen. Fällt er aus, fängt der Gateway-Wächter es ab.
+      TWS_COLD_RESTART: "07:05"
       TWOFA_TIMEOUT_ACTION: restart
       RELOGIN_AFTER_TWOFA_TIMEOUT: "yes"
       EXISTING_SESSION_DETECTED_ACTION: primary
